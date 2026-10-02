@@ -1,0 +1,122 @@
+{
+  "name": "agentwatch",
+  "displayName": "AgentWatch",
+  "description": "Browse past Claude Code sessions: subagents, token usage and MCP tool calls.",
+  "version": "0.1.0",
+  "publisher": "agentwatch",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentwatch",
+          "title": "AgentWatch",
+          "icon": "media/agentwatch.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentwatch": [
+        {
+          "id": "agentwatch.sessions",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentwatch.refresh",
+        "title": "Refresh",
+        "category": "AgentWatch",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentwatch.openSession",
+        "title": "Open Session Details",
+        "category": "AgentWatch",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "agentwatch.openTranscript",
+        "title": "Open Raw Transcript (JSONL)",
+        "category": "AgentWatch",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "agentwatch.filterCurrentWorkspace",
+        "title": "Toggle Filter: Current Workspace Only",
+        "category": "AgentWatch",
+        "icon": "$(filter)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentwatch.filterCurrentWorkspace",
+          "when": "view == agentwatch.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentwatch.refresh",
+          "when": "view == agentwatch.sessions",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentwatch.openSession",
+          "when": "view == agentwatch.sessions && viewItem == session",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentwatch.openTranscript",
+          "when": "view == agentwatch.sessions && (viewItem == session || viewItem == agent)",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AgentWatch",
+      "properties": {
+        "agentwatch.projectsDir": {
+          "type": "string",
+          "default": "~/.claude/projects",
+          "description": "Directory containing Claude Code project transcripts. A leading ~ expands to the home directory."
+        },
+        "agentwatch.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Watch the projects directory and refresh the view when transcripts change."
+        },
+        "agentwatch.statusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show token usage of the most recent session of the current workspace in the status bar."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node --test out/test/parser.test.js out/test/render.test.js",
+    "scan": "node out/scripts/scan.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

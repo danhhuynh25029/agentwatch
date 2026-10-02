@@ -1,0 +1,2 @@
+{"type":"user","uuid":"n1","isSidechain":true,"agentId":"bbb222","timestamp":"2026-09-15T10:00:20.000Z","sessionId":"sess-sub","message":{"role":"user","content":"dig"}}
+{"type":"assistant","uuid":"n2","isSidechain":true,"agentId":"bbb222","timestamp":"2026-09-15T10:00:30.000Z","sessionId":"sess-sub","message":{"model":"claude-haiku-5","id":"msg_n1","content":[{"type":"tool_use","id":"toolu_n_read","name":"Read","input":{}}],"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}}
