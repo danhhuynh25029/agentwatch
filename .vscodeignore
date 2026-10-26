@@ -5,3 +5,8 @@ out/test/**
 out/scripts/**
 **/*.map
 tsconfig.json
+package-lock.json
+.gitignore
+**/*.ts
+*.vsix
+.github/**

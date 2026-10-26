@@ -45,10 +45,14 @@ function table(headers: string[], rows: string[], numericFrom = 1): string {
   return `<table><thead><tr>${th}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
 
-function flattenAgents(list: SubagentNode[], out: SubagentNode[] = []): SubagentNode[] {
-  for (const a of list) {
+/** Pre-order flatten, iterative so deeply nested (crafted) agent chains cannot overflow the stack. */
+export function flattenAgents(list: SubagentNode[]): SubagentNode[] {
+  const out: SubagentNode[] = [];
+  const stack = [...list].reverse();
+  while (stack.length) {
+    const a = stack.pop()!;
     out.push(a);
-    flattenAgents(a.children, out);
+    for (let i = a.children.length - 1; i >= 0; i--) stack.push(a.children[i]);
   }
   return out;
 }
@@ -79,7 +83,7 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
       <tr><th>CLI version</th><td>${esc(m.version ?? '-')}</td></tr>
       <tr><th>Entrypoint</th><td>${esc(m.entrypoint ?? '-')}</td></tr>
       <tr><th>Session</th><td>${esc(s.sessionId)}</td></tr>
-      <tr><th>Lines</th><td>${n(m.lines)}${m.badLines ? ` <span class="muted">(${n(m.badLines)} unparseable, skipped)</span>` : ''}</td></tr>
+      <tr><th>Lines</th><td>${n(m.lines)}${m.badLines ? ` <span class="muted">(${n(m.badLines)} unparseable, skipped)</span>` : ''}${m.skipped ? ` <span class="err">(${esc(m.skipped)})</span>` : ''}</td></tr>
     </table>`;
 
   const tokens = `
@@ -121,7 +125,14 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
       <td>${open}</td>
     </tr>`;
   });
-  const agents = `<h2>Subagents (${n(s.agentCount)})</h2>${table(
+  const agentsSkipped =
+    (s.subagentFilesSkipped
+      ? `<p class="muted">${n(s.subagentFilesSkipped)} more subagent transcript(s) not parsed (per-session limit reached).</p>`
+      : '') +
+    (s.spawnNodesSkipped
+      ? `<p class="muted">${n(s.spawnNodesSkipped)} more subagent spawn(s) without a transcript not shown (per-session limit reached).</p>`
+      : '');
+  const agents = `<h2>Subagents (${n(s.agentCount)})</h2>${agentsSkipped}${table(
     ['Type', 'Description', 'Model', 'Tokens', 'Incl. nested', 'Tool calls', 'Duration', 'Status', ''],
     agentRows,
     3,

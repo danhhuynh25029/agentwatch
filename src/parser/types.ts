@@ -86,6 +86,8 @@ export interface TranscriptStats {
   spawns: AgentSpawn[];
   lines: number;
   badLines: number;
+  /** Set when the file was not parsed (e.g. over the size limit); human-readable reason. */
+  skipped?: string;
 }
 
 export interface AgentMeta {
@@ -123,6 +125,10 @@ export interface SessionSummary {
   main: TranscriptStats;
   subagents: SubagentNode[];
   agentCount: number;
+  /** Subagent transcripts not parsed because the per-session limit was reached. */
+  subagentFilesSkipped?: number;
+  /** Spawn-only subagents (no transcript file) not shown because the per-session limit was reached. */
+  spawnNodesSkipped?: number;
   durationMs?: number;
   /** Totals including all subagents (recursive). */
   totalUsage: TokenUsage;

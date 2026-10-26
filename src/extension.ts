@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { mapPool } from './parser/parser';
 import { formatRelativeTime, formatTokens, totalTokens } from './parser/format';
-import { expandHome, matchesWorkspace, SessionStore } from './parser/store';
+import { expandHome, matchesWorkspace, resolveTranscriptUnderRoot, SessionStore } from './parser/store';
 import { SessionTreeProvider, TreeNode } from './sessionTree';
 import { TokenStatusBar } from './statusBar';
 import { SessionPanelManager } from './webview/panel';
@@ -13,6 +13,20 @@ const QUICK_PICK_LIMIT = 200;
 function projectsRoot(): string {
   const configured = vscode.workspace.getConfiguration('agentwatch').get<string>('projectsDir') || '~/.claude/projects';
   return expandHome(configured.trim());
+}
+
+/**
+ * Commands can be invoked by any extension with arbitrary arguments: only accept .jsonl files
+ * under the configured projects root.
+ */
+async function validateTranscriptArg(filePath: string): Promise<string | undefined> {
+  const resolved = await resolveTranscriptUnderRoot(projectsRoot(), filePath);
+  if (!resolved) {
+    void vscode.window.showWarningMessage(
+      `AgentWatch: refusing to open ${filePath}: not a .jsonl transcript under ${projectsRoot()}.`,
+    );
+  }
+  return resolved;
 }
 
 function workspaceFolders(): string[] {
@@ -58,6 +72,8 @@ export function activate(context: vscode.ExtensionContext): void {
       if (typeof arg === 'string') filePath = arg;
       else if (arg && arg.kind === 'session') filePath = arg.info.filePath;
       else filePath = await pickSession(tree, store);
+      if (!filePath) return;
+      filePath = await validateTranscriptArg(filePath);
       if (filePath) await panels.open(filePath);
     }),
 
@@ -67,6 +83,8 @@ export function activate(context: vscode.ExtensionContext): void {
       else if (arg?.kind === 'session') filePath = arg.info.filePath;
       else if (arg?.kind === 'agent') filePath = arg.agent.transcriptPath || undefined;
       else filePath = await pickSession(tree, store);
+      if (!filePath) return;
+      filePath = await validateTranscriptArg(filePath);
       if (!filePath) return;
       try {
         await vscode.window.showTextDocument(vscode.Uri.file(filePath), { preview: true });

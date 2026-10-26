@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as readline from 'readline';
 import { addUsage, emptyUsage, totalTokens, truncate } from './format';
 import {
   AgentMeta,
@@ -22,6 +21,42 @@ const MAX_PROMPTS = 500;
 const MAX_PROMPT_CHARS = 300;
 const MAX_SUBAGENT_DIR_DEPTH = 4;
 const SUBAGENT_PARSE_CONCURRENCY = 4;
+
+/** Size limits for untrusted on-disk input. Overridable in tests. */
+export interface ParseLimits {
+  /** Transcript files larger than this are not parsed (flagged via `TranscriptStats.skipped`). */
+  maxTranscriptBytes: number;
+  /**
+   * Single JSONL lines longer than this many bytes are counted as bad lines; their bytes are
+   * discarded while streaming, so the oversized string is never built.
+   */
+  maxLineBytes: number;
+  /** meta.json files larger than this are ignored. */
+  maxMetaBytes: number;
+  /** At most this many subagent transcripts are parsed per session (the rest are counted as skipped). */
+  maxSubagentFiles: number;
+  /** At most this many spawn-only subagent nodes (no transcript file) are kept per session. */
+  maxSpawnNodes: number;
+}
+
+/** Options for {@link parseTranscriptFile}. `highWaterMark` (read chunk size) exists for tests. */
+export type TranscriptReadLimits = Pick<ParseLimits, 'maxTranscriptBytes' | 'maxLineBytes'> & { highWaterMark?: number };
+
+export const DEFAULT_LIMITS: Readonly<ParseLimits> = Object.freeze({
+  maxTranscriptBytes: 512 * 1024 * 1024,
+  maxLineBytes: 16 * 1024 * 1024,
+  maxMetaBytes: 1024 * 1024,
+  maxSubagentFiles: 2000,
+  maxSpawnNodes: 5000,
+});
+
+/**
+ * Prototype-less map for keys taken from transcripts (model / tool / server / skill names).
+ * A plain `{}` would let a key like "__proto__" mutate Object.prototype via `obj[key] ??= ...`.
+ */
+function dict<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
 
 type Json = Record<string, unknown>;
 
@@ -46,20 +81,82 @@ export function splitMcpName(name: string): { server: string; tool: string } | u
   return { server: rest.slice(0, idx), tool: rest.slice(idx + 2) || '(unknown)' };
 }
 
-const NOISE_TAG_RE =
-  /<(ide_selection|ide_opened_file|ide_diagnostics|system-reminder|local-command-stdout|local-command-stderr|local-command-caveat|command-message|user-prompt-submit-hook)\b[^>]*>[\s\S]*?<\/\1>/g;
+const NOISE_TAGS = [
+  'ide_selection',
+  'ide_opened_file',
+  'ide_diagnostics',
+  'system-reminder',
+  'local-command-stdout',
+  'local-command-stderr',
+  'local-command-caveat',
+  'command-message',
+  'user-prompt-submit-hook',
+];
+
+function isWordChar(c: string | undefined): boolean {
+  return c !== undefined && /[A-Za-z0-9_]/.test(c);
+}
+
+/**
+ * Replace every `<tag ...>...</tag>` block of a noise tag with a space. Same result as
+ * `/<(tag1|tag2|...)\b[^>]*>[\s\S]*?<\/\1>/g`, but linear time: the regex rescans to the end of
+ * the input for every unclosed opening tag, which is quadratic on crafted transcripts.
+ * Positions found by indexOf are cached and reused because the scan only moves forward.
+ */
+export function stripNoiseTags(text: string): string {
+  let out = '';
+  let copyFrom = 0;
+  let i = text.indexOf('<');
+  let nextGt = -2; // cached index of the next '>' at or after the scan position (-1 = none left)
+  const closeAt = new Map<string, number>(); // tag -> cached index of next closing tag (-1 = none left)
+  while (i >= 0) {
+    let matchedEnd = -1;
+    for (const tag of NOISE_TAGS) {
+      if (!text.startsWith(tag, i + 1) || isWordChar(text[i + 1 + tag.length])) continue;
+      const nameEnd = i + 1 + tag.length;
+      if (nextGt !== -1 && nextGt < nameEnd) nextGt = text.indexOf('>', nameEnd);
+      if (nextGt === -1) break; // no '>' anywhere after this point: nothing more can match
+      const closeTag = `</${tag}>`;
+      let close = closeAt.get(tag);
+      if (close === undefined || (close !== -1 && close < nextGt + 1)) {
+        close = text.indexOf(closeTag, nextGt + 1);
+        closeAt.set(tag, close);
+      }
+      if (close === -1) continue; // never closed after here
+      matchedEnd = close + closeTag.length;
+      break;
+    }
+    if (matchedEnd >= 0) {
+      out += text.slice(copyFrom, i) + ' ';
+      copyFrom = matchedEnd;
+      i = text.indexOf('<', matchedEnd);
+    } else {
+      i = text.indexOf('<', i + 1);
+    }
+  }
+  return copyFrom === 0 ? text : out + text.slice(copyFrom);
+}
+
+/** Inner text of the first `<tag>...</tag>` (linear; equivalent to a lazy non-global regex exec). */
+function firstTagContent(text: string, tag: string): string | undefined {
+  const open = `<${tag}>`;
+  const start = text.indexOf(open);
+  if (start < 0) return undefined;
+  const end = text.indexOf(`</${tag}>`, start + open.length);
+  return end < 0 ? undefined : text.slice(start + open.length, end);
+}
 
 /** Turn raw user text into a displayable prompt, or undefined if it is not a real prompt. */
 export function cleanPromptText(raw: string): string | undefined {
   let text = raw;
   if (text.trimStart().startsWith('<task-notification>')) return undefined;
-  const cmd = /<command-name>([\s\S]*?)<\/command-name>/.exec(text);
-  if (cmd) {
-    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
-    const name = cmd[1].trim();
-    return (name.startsWith('/') ? name : '/' + name) + (args && args[1].trim() ? ' ' + args[1].trim() : '');
+  const cmd = firstTagContent(text, 'command-name');
+  if (cmd !== undefined) {
+    const args = firstTagContent(text, 'command-args')?.trim();
+    const name = cmd.trim();
+    return (name.startsWith('/') ? name : '/' + name) + (args ? ' ' + args : '');
   }
-  text = text.replace(NOISE_TAG_RE, ' ').trim();
+  text = stripNoiseTags(text).trim();
   if (!text) return undefined;
   if (text.startsWith('Caveat: The messages below')) return undefined;
   if (text.startsWith('[Request interrupted')) return undefined;
@@ -89,18 +186,25 @@ export class TranscriptAccumulator {
     this.stats = {
       filePath,
       usage: emptyUsage(),
-      usageByModel: {},
+      usageByModel: dict(),
       models: [],
       apiMessages: 0,
-      tools: {},
-      mcp: {},
-      skills: {},
+      tools: dict(),
+      mcp: dict(),
+      skills: dict(),
       toolCalls: 0,
       prompts: [],
       spawns: [],
       lines: 0,
       badLines: 0,
     };
+  }
+
+  /** Record a line that was dropped without parsing (over the line size limit). */
+  addOversizedLine(): void {
+    this.lineNo++;
+    this.stats.lines++;
+    this.stats.badLines++;
   }
 
   addLine(line: string): void {
@@ -204,7 +308,7 @@ export class TranscriptAccumulator {
     s.toolCalls++;
     const mcp = splitMcpName(name);
     if (mcp) {
-      const server = (s.mcp[mcp.server] ??= { server: mcp.server, calls: 0, errors: 0, tools: {} });
+      const server = (s.mcp[mcp.server] ??= { server: mcp.server, calls: 0, errors: 0, tools: dict() });
       server.calls++;
       const tool = (server.tools[mcp.tool] ??= { name: mcp.tool, calls: 0, errors: 0 });
       tool.calls++;
@@ -273,7 +377,7 @@ export class TranscriptAccumulator {
       const mcp = splitMcpName(name);
       const s = this.stats;
       if (mcp) {
-        const server = (s.mcp[mcp.server] ??= { server: mcp.server, calls: 0, errors: 0, tools: {} });
+        const server = (s.mcp[mcp.server] ??= { server: mcp.server, calls: 0, errors: 0, tools: dict() });
         server.errors++;
         (server.tools[mcp.tool] ??= { name: mcp.tool, calls: 0, errors: 0 }).errors++;
       } else {
@@ -345,27 +449,90 @@ export function parseTranscriptText(text: string, filePath = '<memory>'): Transc
   return acc.finish();
 }
 
-/** Stream-parse a JSONL transcript file line by line (bounded memory for large files). */
-export async function parseTranscriptFile(filePath: string): Promise<TranscriptStats> {
+/**
+ * Stream-parse a JSONL transcript file line by line (bounded memory for large files).
+ * Files over `limits.maxTranscriptBytes` are not parsed: the result is empty with `skipped` set.
+ */
+export async function parseTranscriptFile(
+  filePath: string,
+  limits: TranscriptReadLimits = DEFAULT_LIMITS,
+): Promise<TranscriptStats> {
   const acc = new TranscriptAccumulator(filePath);
   await fs.promises.access(filePath, fs.constants.R_OK);
-  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  // Older Node versions do not forward input stream errors to the readline iterator;
-  // close it ourselves so the loop ends, then rethrow.
-  let streamError: unknown;
-  stream.on('error', (err) => {
-    streamError = err;
-    rl.close();
+  const { size } = await fs.promises.stat(filePath);
+  if (size > limits.maxTranscriptBytes) {
+    const stats = acc.finish();
+    stats.skipped = `file too large (${formatMiB(size)} > ${formatMiB(limits.maxTranscriptBytes)}), not parsed`;
+    return stats;
+  }
+  // `end` bounds the read even if the file grows (live session) between stat and read.
+  // No `encoding`: lines are split on raw 0x0A bytes and decoded whole, so multi-byte UTF-8
+  // characters split across chunks decode correctly.
+  const stream = fs.createReadStream(filePath, {
+    end: limits.maxTranscriptBytes - 1,
+    highWaterMark: limits.highWaterMark,
   });
   try {
-    for await (const line of rl) acc.addLine(line);
+    await forEachLine(stream, limits.maxLineBytes, (line) => acc.addLine(line), () => acc.addOversizedLine());
   } finally {
-    rl.close();
     stream.destroy();
   }
-  if (streamError) throw streamError;
   return acc.finish();
+}
+
+/**
+ * Split a byte stream into '\n'-terminated lines (a trailing '\r' is left for the caller to trim).
+ * Unlike readline, a line longer than `maxLineBytes` is never buffered: once it exceeds the limit
+ * its bytes are discarded up to the next '\n' and `onOversized` is called instead of `onLine`.
+ * Stream errors reject the returned promise.
+ */
+export async function forEachLine(
+  stream: AsyncIterable<Buffer | string>,
+  maxLineBytes: number,
+  onLine: (line: string) => void,
+  onOversized: () => void,
+): Promise<void> {
+  let parts: Buffer[] = [];
+  let len = 0;
+  let dropping = false;
+  let pending = false; // bytes (or a dropped line) seen since the last '\n'
+  const emit = () => {
+    if (dropping) onOversized();
+    else onLine(parts.length === 1 ? parts[0].toString('utf8') : Buffer.concat(parts, len).toString('utf8'));
+    parts = [];
+    len = 0;
+    dropping = false;
+    pending = false;
+  };
+  for await (const raw of stream) {
+    const chunk = typeof raw === 'string' ? Buffer.from(raw, 'utf8') : raw;
+    let start = 0;
+    while (start <= chunk.length) {
+      const nl = chunk.indexOf(0x0a, start);
+      const end = nl === -1 ? chunk.length : nl;
+      const piece = end - start;
+      if (piece > 0) pending = true;
+      if (!dropping && piece > 0) {
+        if (len + piece > maxLineBytes) {
+          dropping = true;
+          parts = [];
+          len = 0;
+        } else {
+          // Copy so a short line does not pin the whole read chunk in memory.
+          parts.push(Buffer.from(chunk.subarray(start, end)));
+          len += piece;
+        }
+      }
+      if (nl === -1) break;
+      emit();
+      start = nl + 1;
+    }
+  }
+  if (pending) emit();
+}
+
+function formatMiB(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
 /**
@@ -394,7 +561,14 @@ interface AgentFile {
   metaPath: string;
 }
 
-async function findAgentFiles(dir: string, depth: number, out: AgentFile[]): Promise<void> {
+interface AgentFileScan {
+  files: AgentFile[];
+  /** Agent transcripts found beyond `max` (not parsed). */
+  skipped: number;
+  max: number;
+}
+
+async function findAgentFiles(dir: string, depth: number, out: AgentFileScan): Promise<void> {
   if (depth > MAX_SUBAGENT_DIR_DEPTH) return;
   let entries: fs.Dirent[];
   try {
@@ -406,16 +580,41 @@ async function findAgentFiles(dir: string, depth: number, out: AgentFile[]): Pro
     const full = path.join(dir, e.name);
     if (e.isFile()) {
       const m = /^agent-(.+)\.jsonl$/.exec(e.name);
-      if (m) out.push({ agentId: m[1], jsonlPath: full, metaPath: path.join(dir, `agent-${m[1]}.meta.json`) });
+      if (!m) continue;
+      if (out.files.length >= out.max) out.skipped++;
+      else out.files.push({ agentId: m[1], jsonlPath: full, metaPath: path.join(dir, `agent-${m[1]}.meta.json`) });
     } else if (e.isDirectory()) {
       await findAgentFiles(full, depth + 1, out);
     }
   }
 }
 
-async function readMeta(metaPath: string): Promise<AgentMeta | undefined> {
+/** Read a whole file only if it is at most `maxBytes` (never buffers more than maxBytes + 1). */
+async function readSmallFile(filePath: string, maxBytes: number): Promise<string | undefined> {
+  const handle = await fs.promises.open(filePath, 'r');
   try {
-    const raw = JSON.parse(await fs.promises.readFile(metaPath, 'utf8'));
+    const { size } = await handle.stat();
+    if (size > maxBytes) return undefined;
+    // +1 detects growth past the cap after stat.
+    const buf = Buffer.alloc(size + 1);
+    let total = 0;
+    while (total < buf.length) {
+      const { bytesRead } = await handle.read(buf, total, buf.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > maxBytes) return undefined;
+    return buf.subarray(0, total).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readMeta(metaPath: string, maxBytes: number): Promise<AgentMeta | undefined> {
+  try {
+    const text = await readSmallFile(metaPath, maxBytes);
+    if (text === undefined) return undefined;
+    const raw = JSON.parse(text);
     if (!isObj(raw)) return undefined;
     return {
       agentType: str(raw.agentType),
@@ -458,7 +657,7 @@ function mergeTools(target: Record<string, ToolStat>, src: Record<string, ToolSt
 
 function mergeMcp(target: Record<string, McpServerStat>, src: Record<string, McpServerStat>): void {
   for (const s of Object.values(src)) {
-    const d = (target[s.server] ??= { server: s.server, calls: 0, errors: 0, tools: {} });
+    const d = (target[s.server] ??= { server: s.server, calls: 0, errors: 0, tools: dict() });
     d.calls += s.calls;
     d.errors += s.errors;
     mergeTools(d.tools, s.tools);
@@ -474,15 +673,16 @@ export function sessionDirFor(sessionPath: string): string {
  * Parse a main session transcript plus all subagent transcripts under
  * `<project>/<sessionId>/subagents/`, linking each subagent to the tool_use that spawned it.
  */
-export async function parseSession(sessionPath: string): Promise<SessionSummary> {
-  const main = await parseTranscriptFile(sessionPath);
-  const agentFiles: AgentFile[] = [];
-  await findAgentFiles(path.join(sessionDirFor(sessionPath), 'subagents'), 0, agentFiles);
+export async function parseSession(sessionPath: string, limits: ParseLimits = DEFAULT_LIMITS): Promise<SessionSummary> {
+  const main = await parseTranscriptFile(sessionPath, limits);
+  const scan: AgentFileScan = { files: [], skipped: 0, max: limits.maxSubagentFiles };
+  await findAgentFiles(path.join(sessionDirFor(sessionPath), 'subagents'), 0, scan);
+  const agentFiles = scan.files;
 
   const parsed = await mapPool(agentFiles, SUBAGENT_PARSE_CONCURRENCY, async (f) => {
     const [stats, meta] = await Promise.all([
-      parseTranscriptFile(f.jsonlPath).catch(() => new TranscriptAccumulator(f.jsonlPath).finish()),
-      readMeta(f.metaPath),
+      parseTranscriptFile(f.jsonlPath, limits).catch(() => new TranscriptAccumulator(f.jsonlPath).finish()),
+      readMeta(f.metaPath, limits.maxMetaBytes),
     ]);
     return { file: f, stats, meta };
   });
@@ -532,10 +732,18 @@ export async function parseSession(sessionPath: string): Promise<SessionSummary>
 
   // Spawns without a transcript file (older versions, or file not yet written): keep them visible
   // using the numbers reported in toolUseResult, but they contribute no tokens to the totals.
+  // Capped: a crafted transcript can contain any number of spawn tool_use blocks.
+  let spawnNodes = 0;
+  let spawnNodesSkipped = 0;
   for (const [toolUseId, { owner, spawn }] of byToolUse) {
     if (linkedSpawn.has(toolUseId)) continue;
     const id = spawn.result?.agentId ?? toolUseId;
     if (nodes.has(id)) continue;
+    if (spawnNodes >= limits.maxSpawnNodes) {
+      spawnNodesSkipped++;
+      continue;
+    }
+    spawnNodes++;
     parentOf.set(id, owner);
     nodes.set(id, {
       agentId: id,
@@ -576,26 +784,35 @@ export async function parseSession(sessionPath: string): Promise<SessionSummary>
   }
   const byStart = (a: SubagentNode, b: SubagentNode) =>
     (a.stats.startTime ?? '').localeCompare(b.stats.startTime ?? '');
-  const finalize = (list: SubagentNode[], depth: number): TokenUsage => {
-    list.sort(byStart);
-    const sum = emptyUsage();
-    for (const n of list) {
-      n.depth = depth;
-      n.totalUsage = { ...n.stats.usage };
-      addUsage(n.totalUsage, finalize(n.children, depth + 1));
-      addUsage(sum, n.totalUsage);
+  // Iterative (not recursive) so a long crafted parent chain cannot overflow the stack.
+  // BFS sets depth and sort order; parents precede children in `order`, so walking it
+  // backwards sums children into parents bottom-up.
+  roots.sort(byStart);
+  const order: SubagentNode[] = [];
+  for (const r of roots) r.depth = 1;
+  const queue = [...roots];
+  for (let qi = 0; qi < queue.length; qi++) {
+    const n = queue[qi];
+    order.push(n);
+    n.children.sort(byStart);
+    for (const c of n.children) {
+      c.depth = n.depth + 1;
+      queue.push(c);
     }
-    return sum;
-  };
-  finalize(roots, 1);
+  }
+  for (let i = order.length - 1; i >= 0; i--) {
+    const n = order[i];
+    n.totalUsage = { ...n.stats.usage };
+    for (const c of n.children) addUsage(n.totalUsage, c.totalUsage);
+  }
 
   // Totals: main + each agent exactly once (flat iteration avoids double counting).
   const all = [main, ...parsed.map((p) => p.stats)];
   const totalUsage = emptyUsage();
-  const totalByModel: Record<string, ModelUsage> = {};
-  const totalTools: Record<string, ToolStat> = {};
-  const totalMcp: Record<string, McpServerStat> = {};
-  const totalSkills: Record<string, number> = {};
+  const totalByModel = dict<ModelUsage>();
+  const totalTools = dict<ToolStat>();
+  const totalMcp = dict<McpServerStat>();
+  const totalSkills = dict<number>();
   let totalToolCalls = 0;
   for (const st of all) {
     addUsage(totalUsage, st.usage);
@@ -618,6 +835,8 @@ export async function parseSession(sessionPath: string): Promise<SessionSummary>
     main,
     subagents: roots,
     agentCount: nodes.size,
+    subagentFilesSkipped: scan.skipped || undefined,
+    spawnNodesSkipped: spawnNodesSkipped || undefined,
     durationMs: durationOf(main),
     totalUsage,
     totalByModel,

@@ -209,3 +209,30 @@ export function matchesWorkspace(dirName: string, cwd: string | undefined, folde
   }
   return false;
 }
+
+/**
+ * Validate a transcript path received as a command argument: it must be a `.jsonl` file that
+ * resolves (after following symlinks) inside `root`. Returns the absolute path, or undefined.
+ */
+export async function resolveTranscriptUnderRoot(root: string, filePath: string): Promise<string | undefined> {
+  if (!root || !filePath || !filePath.toLowerCase().endsWith('.jsonl')) return undefined;
+  let realRoot: string;
+  let realFile: string;
+  try {
+    [realRoot, realFile] = await Promise.all([fs.promises.realpath(root), fs.promises.realpath(filePath)]);
+  } catch {
+    return undefined;
+  }
+  if (!realFile.toLowerCase().endsWith('.jsonl')) return undefined;
+  const rel = path.relative(realRoot, realFile);
+  if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return undefined;
+  try {
+    if (!(await fs.promises.stat(realFile)).isFile()) return undefined;
+  } catch {
+    return undefined;
+  }
+  // Return the caller's (absolute) path rather than the realpath so cache/panel keys stay stable.
+  // Residual TOCTOU: a symlink swapped between this check and the open could redirect the read,
+  // but that requires local write access inside the projects root, so it is accepted.
+  return path.resolve(filePath);
+}

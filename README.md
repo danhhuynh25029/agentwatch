@@ -1,4 +1,4 @@
-# AgentWatch
+# Agent Session Watch
 
 A VS Code extension for browsing past Claude Code sessions stored in `~/.claude/projects`. For each session it shows the subagents that ran, token usage, and which tools and MCP tools were called.
 
@@ -28,7 +28,7 @@ A VS Code extension for browsing past Claude Code sessions stored in `~/.claude/
 ## How data is read
 
 - The session list comes from file stats. Each file's first 128 KB is read to get a provisional title and the cwd.
-- A full parse runs only when you expand or open a session. It streams the file with `readline`, so large transcripts are never loaded into memory all at once.
+- A full parse runs only when you expand or open a session. It streams the file line by line, so large transcripts are never loaded into memory all at once. Files over 512 MB and single lines over 16 MB are skipped.
 - Results are cached by path + mtime + size.
 - Malformed or truncated lines are skipped. This happens when a file is still being written.
 - Token usage is deduplicated by `message.id`, because one API message can be split across several lines.

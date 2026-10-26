@@ -1,17 +1,45 @@
 {
   "name": "agentwatch",
-  "displayName": "AgentWatch",
+  "displayName": "Agent Session Watch",
   "description": "Browse past Claude Code sessions: subagents, token usage and MCP tool calls.",
   "version": "0.1.0",
   "publisher": "agentwatch",
   "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danhhuynh25029/agentwatch.git"
+  },
+  "homepage": "https://github.com/danhhuynh25029/agentwatch#readme",
+  "bugs": {
+    "url": "https://github.com/danhhuynh25029/agentwatch/issues"
+  },
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=18"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Visualization"
   ],
+  "keywords": [
+    "claude",
+    "claude code",
+    "tokens",
+    "mcp",
+    "subagents",
+    "ai agents",
+    "usage"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "AgentWatch reads local Claude Code transcript files."
+    }
+  },
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished"
@@ -92,6 +120,7 @@
         "agentwatch.projectsDir": {
           "type": "string",
           "default": "~/.claude/projects",
+          "scope": "machine",
           "description": "Directory containing Claude Code project transcripts. A leading ~ expands to the home directory."
         },
         "agentwatch.autoRefresh": {
@@ -111,7 +140,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
-    "test": "node --test out/test/parser.test.js out/test/render.test.js",
+    "test": "node --test out/test/parser.test.js out/test/render.test.js out/test/security.test.js",
     "scan": "node out/scripts/scan.js"
   },
   "devDependencies": {
