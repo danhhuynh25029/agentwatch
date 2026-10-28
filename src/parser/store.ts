@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { parseSession, peekTranscript, sessionTitle } from './parser';
+import { isCodexTranscript, parseCodexFile, parseCodexText } from './codex';
+import { IncrementalTranscript, parseSession, parseTranscriptFile, peekTranscript, sessionTitle, snapshotStats } from './parser';
+import { TranscriptStats } from './types';
 import { SessionSummary } from './types';
 
 export interface SessionFileInfo {
@@ -24,6 +26,8 @@ export interface ProjectInfo {
 export interface SessionPeek {
   cwd?: string;
   title?: string;
+  gitBranch?: string;
+  firstPrompt?: string;
 }
 
 export function expandHome(p: string): string {
@@ -128,8 +132,24 @@ function cacheKey(info: { filePath: string; mtimeMs: number; size: number }): st
  * Caches parse results keyed by path+mtime+size, and de-duplicates concurrent parses of the
  * same file so expanding a tree node and opening the panel at once only parses once.
  */
+/** Transcripts modified within this window are parsed incrementally (only appended bytes). */
+const INCREMENTAL_WINDOW_MS = 10 * 60 * 1000;
+
 export class SessionStore {
-  private readonly summaries = new LruCache<string, SessionSummary>(100);
+  private readonly summaries = new LruCache<string, SessionSummary>(500);
+  /** Incremental parsers for recently modified transcripts, by path. */
+  private readonly live = new LruCache<string, IncrementalTranscript>(40);
+
+  private async parseFile(filePath: string): Promise<TranscriptStats> {
+    const { mtimeMs } = await fs.promises.stat(filePath);
+    if (Date.now() - mtimeMs > INCREMENTAL_WINDOW_MS && !this.live.get(filePath)) return parseTranscriptFile(filePath);
+    let inc = this.live.get(filePath);
+    if (!inc) {
+      inc = new IncrementalTranscript(filePath);
+      this.live.set(filePath, inc);
+    }
+    return snapshotStats(await inc.update());
+  }
   private readonly peeks = new LruCache<string, SessionPeek>(5000);
   private readonly inflight = new Map<string, Promise<SessionSummary>>();
 
@@ -144,7 +164,11 @@ export class SessionStore {
     if (hit) return hit;
     let p = this.inflight.get(key);
     if (!p) {
-      p = parseSession(info.filePath)
+      p = (
+        isCodexTranscript(info.filePath)
+          ? parseCodexFile(info.filePath).then((r) => r.summary)
+          : parseSession(info.filePath, undefined, (f) => this.parseFile(f))
+      )
         .then((s) => {
           this.summaries.set(key, s);
           return s;
@@ -178,10 +202,18 @@ export class SessionStore {
     if (hit) return hit;
     let result: SessionPeek;
     try {
+      if (isCodexTranscript(info.filePath)) {
+        const { summary } = parseCodexText(await readHead(info.filePath), info.filePath);
+        result = { cwd: summary.main.cwd, title: summary.main.firstPrompt ? summary.title : undefined, gitBranch: summary.main.gitBranch, firstPrompt: summary.main.firstPrompt };
+        this.peeks.set(key, result);
+        return result;
+      }
       const st = await peekTranscript(info.filePath);
       result = {
         cwd: st.cwd,
         title: st.aiTitle || st.summaryTitle || st.firstPrompt ? sessionTitle(st, info.sessionId) : undefined,
+        gitBranch: st.gitBranch,
+        firstPrompt: st.firstPrompt,
       };
     } catch {
       result = {};
@@ -193,6 +225,22 @@ export class SessionStore {
   clear(): void {
     this.summaries.clear();
     this.peeks.clear();
+    this.live.clear();
+  }
+}
+
+/** First complete lines of a file within `maxBytes`. */
+async function readHead(filePath: string, maxBytes = 128 * 1024): Promise<string> {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buf, 0, maxBytes, 0);
+    const text = buf.subarray(0, bytesRead).toString('utf8');
+    if (bytesRead < maxBytes) return text;
+    const nl = text.lastIndexOf('\n');
+    return nl >= 0 ? text.slice(0, nl) : '';
+  } finally {
+    await handle.close();
   }
 }
 

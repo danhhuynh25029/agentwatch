@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as path from 'path';
 import { parseSession } from '../parser/parser';
 import { matchesWorkspace } from '../parser/store';
+import { Pricing } from '../parser/pricing';
 import { esc, renderSession } from '../webview/render';
 
 const FIX = path.resolve(__dirname, '..', '..', 'fixtures');
@@ -15,10 +16,11 @@ test('renderSession escapes untrusted transcript text and uses a nonce CSP', asy
   const s = await parseSession(path.join(FIX, 'project', 'sess-sub.jsonl'));
   s.title = '<script>alert(1)</script>';
   s.main.prompts.push({ text: '<b onclick="x()">hi</b>' });
-  const { html, transcripts } = renderSession(s, 'NONCE123', 'vscode-resource:');
+  const { html, transcripts } = renderSession(s, 'NONCE123', 'vscode-resource:', { pricing: new Pricing(), annotation: { tags: ['<x>'], note: '<i>n</i>' } });
   assert.ok(!html.includes('<script>alert(1)</script>'));
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(!html.includes('<b onclick'));
+  assert.ok(!html.includes('<i>n</i>') && !html.includes('#<x>'));
   assert.ok(html.includes("script-src 'nonce-NONCE123'"));
   assert.ok(!/style="/.test(html), 'inline style attributes would be blocked by CSP');
   assert.equal(transcripts[0], s.filePath);

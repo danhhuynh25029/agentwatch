@@ -13,6 +13,7 @@ export function addUsage(target: TokenUsage, src: TokenUsage): void {
   target.output += src.output;
   target.cacheWrite += src.cacheWrite;
   target.cacheRead += src.cacheRead;
+  if (src.cacheWrite1h) target.cacheWrite1h = (target.cacheWrite1h ?? 0) + src.cacheWrite1h;
 }
 
 /** 1234 -> "1.2K", 1234567 -> "1.2M". */

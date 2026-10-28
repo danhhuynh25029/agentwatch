@@ -5,6 +5,8 @@ export interface TokenUsage {
   output: number;
   cacheWrite: number;
   cacheRead: number;
+  /** Part of cacheWrite written with the 1-hour TTL (priced higher). Absent when 0. */
+  cacheWrite1h?: number;
 }
 
 export interface ModelUsage extends TokenUsage {
@@ -56,6 +58,72 @@ export interface AgentSpawn {
   notifiedStatus?: string;
 }
 
+/** A tool call whose tool_result had is_error set. */
+export interface ToolErrorEntry {
+  timestamp?: string;
+  /** Full tool name (MCP tools keep the `mcp__server__tool` form). */
+  tool: string;
+  /** Truncated JSON of the tool input. */
+  input: string;
+  /** Truncated error text from the tool_result. */
+  error: string;
+  /** Set on session totals: which subagent made the call (undefined = main thread). */
+  agent?: string;
+}
+
+/** Files touched by Edit / Write / MultiEdit / NotebookEdit. */
+export interface FileEditStat {
+  path: string;
+  edits: number;
+  writes: number;
+  /** Calls whose tool_result was an error. */
+  failed: number;
+  lastTime?: string;
+}
+
+/** Context size (input + cache write + cache read) of one API message, in message order. */
+export interface ContextPoint {
+  /** Index of the API message in the transcript (0-based). */
+  i: number;
+  timestamp?: string;
+  tokens: number;
+}
+
+/** Size of tool results per tool (chars; roughly 4 chars per token). */
+export interface ToolResultSize {
+  name: string;
+  calls: number;
+  chars: number;
+}
+
+/** One large tool result. */
+export interface LargeResult {
+  tool: string;
+  input: string;
+  chars: number;
+  timestamp?: string;
+  agent?: string;
+}
+
+/** Repeated reads of one file via the Read tool. */
+export interface FileReadStat {
+  path: string;
+  reads: number;
+  chars: number;
+}
+
+/** A `git commit` made through the Bash tool. */
+export interface CommitEntry {
+  timestamp?: string;
+  hash?: string;
+  branch?: string;
+  message?: string;
+  command: string;
+  failed?: boolean;
+  /** Cumulative usage of this transcript, per model, when the commit was made. */
+  usageAtCommit: Record<string, TokenUsage>;
+}
+
 /** Stats for a single JSONL transcript file (main session or one subagent). */
 export interface TranscriptStats {
   filePath: string;
@@ -84,6 +152,29 @@ export interface TranscriptStats {
   toolCalls: number;
   prompts: PromptEntry[];
   spawns: AgentSpawn[];
+  toolErrors: ToolErrorEntry[];
+  fileEdits: Record<string, FileEditStat>;
+  /** Downsampled context-size series. */
+  context: ContextPoint[];
+  /** API message indexes (see ContextPoint.i) at which a compaction happened. */
+  compactions: ContextPoint[];
+  /** Usage per local calendar day (YYYY-MM-DD) and model. */
+  usageByDay: Record<string, Record<string, ModelUsage>>;
+  /** Names of tool calls that have no tool_result yet (most recent last). */
+  pendingTools: string[];
+  /** Usage per UTC hour (ISO prefix YYYY-MM-DDTHH) and model, for 5-hour block tracking. */
+  usageByHour: Record<string, Record<string, ModelUsage>>;
+  resultSizes: Record<string, ToolResultSize>;
+  /** Largest tool results, biggest first (capped). */
+  largestResults: LargeResult[];
+  fileReads: Record<string, FileReadStat>;
+  commits: CommitEntry[];
+  /** stop_reason of the last assistant message. */
+  lastStopReason?: string;
+  /** Time of the last end of turn (end_turn message or stop hook summary). */
+  turnEndedAt?: string;
+  /** Cost Claude Code itself recorded (last cost-state line), in USD. */
+  reportedCostUsd?: number;
   lines: number;
   badLines: number;
   /** Set when the file was not parsed (e.g. over the size limit); human-readable reason. */
@@ -137,5 +228,13 @@ export interface SessionSummary {
   totalMcp: Record<string, McpServerStat>;
   totalSkills: Record<string, number>;
   totalToolCalls: number;
+  totalByDay: Record<string, Record<string, ModelUsage>>;
+  /** Tool errors from main + subagents, oldest first (capped). */
+  totalToolErrors: ToolErrorEntry[];
+  totalFileEdits: Record<string, FileEditStat>;
+  totalByHour: Record<string, Record<string, ModelUsage>>;
+  totalResultSizes: Record<string, ToolResultSize>;
+  totalLargestResults: LargeResult[];
+  totalFileReads: Record<string, FileReadStat>;
   models: string[];
 }

@@ -1,48 +1,27 @@
 // Pure HTML rendering for the session panel (no vscode dependency, unit-testable).
 // Everything coming from transcripts is untrusted and must go through esc().
 import { formatDuration, formatTokens, totalTokens } from '../parser/format';
+import * as pathLib from 'path';
+import { cacheHitRate, formatPercent, formatUsd, Pricing } from '../parser/pricing';
 import { SessionSummary, SubagentNode, TokenUsage, ToolStat } from '../parser/types';
+import { SessionAnnotation } from '../annotations';
+import { approxTokens, sessionInsights, toolLabel } from '../parser/insights';
+import { action, chip, esc, ganttChart, GanttRow, hero, kpis, lineChart, MAX_INDENT, n, nav, page, pill, section, shareBar, statusPill, table, time, tok } from './html';
 
-export function esc(v: unknown): string {
-  return String(v ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+export { esc, renderMessage } from './html';
 
-function n(v: number): string {
-  return esc(v.toLocaleString('en-US'));
-}
-
-function tok(v: number): string {
-  return `<span title="${n(v)}">${esc(formatTokens(v))}</span>`;
-}
-
-function time(iso: string | undefined): string {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? esc(iso) : esc(d.toLocaleString());
-}
-
-function cards(label: string, u: TokenUsage): string {
-  const items: Array<[string, number]> = [
-    ['Input', u.input],
-    ['Output', u.output],
-    ['Cache write', u.cacheWrite],
-    ['Cache read', u.cacheRead],
-    ['Total', totalTokens(u)],
-  ];
-  return `<div class="cards-row"><div class="cards-label">${esc(label)}</div><div class="cards">${items
-    .map(([k, v]) => `<div class="card"><div class="card-k">${esc(k)}</div><div class="card-v">${tok(v)}</div></div>`)
-    .join('')}</div></div>`;
-}
-
-function table(headers: string[], rows: string[], numericFrom = 1): string {
-  if (rows.length === 0) return '<p class="muted">None</p>';
-  const th = headers.map((h, i) => `<th class="${i >= numericFrom ? 'num' : ''}">${esc(h)}</th>`).join('');
-  return `<table><thead><tr>${th}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+function usageCards(label: string, u: TokenUsage, cost: number): string {
+  return kpis(
+    [
+      { label: 'Input', value: tok(u.input), tone: 'blue' },
+      { label: 'Output', value: tok(u.output), tone: 'purple' },
+      { label: 'Cache write', value: tok(u.cacheWrite), sub: u.cacheWrite1h ? `${tok(u.cacheWrite1h)} at 1h TTL` : undefined, tone: 'orange' },
+      { label: 'Cache read', value: tok(u.cacheRead), tone: 'teal' },
+      { label: 'Total', value: tok(totalTokens(u)), tone: 'blue' },
+      { label: 'Cost (est.)', value: esc(formatUsd(cost)), tone: 'green' },
+    ],
+    label,
+  );
 }
 
 /** Pre-order flatten, iterative so deeply nested (crafted) agent chains cannot overflow the stack. */
@@ -61,19 +40,59 @@ export interface RenderResult {
   html: string;
   /** Transcript paths addressable from the webview by index (index 0 = main transcript). */
   transcripts: string[];
+  /** Edited file paths addressable from the webview by index. */
+  files: string[];
 }
 
-export function renderSession(s: SessionSummary, nonce: string, cspSource: string): RenderResult {
-  const m = s.main;
-  const transcripts = [s.filePath];
+export interface RenderOptions {
+  pricing: Pricing;
+  annotation?: SessionAnnotation;
+  /** True when the transcript was modified very recently (session probably running). */
+  live?: boolean;
+}
 
-  const header = `
-    <h1>${esc(s.title)}</h1>
-    <div class="actions">
-      <button data-action="refresh">Refresh</button>
-      <button data-action="transcript" data-index="0">Open transcript</button>
-    </div>
-    <table class="kv">
+export function renderSession(s: SessionSummary, nonce: string, cspSource: string, opts: RenderOptions): RenderResult {
+  const m = s.main;
+  const { pricing } = opts;
+  const ann = opts.annotation ?? {};
+  const transcripts = [s.filePath];
+  const files: string[] = [];
+  const totalCost = pricing.costByModel(s.totalByModel);
+  const unpriced = pricing.unpriced(s.totalByModel);
+
+  const live = opts.live ? pill(m.pendingTools.length ? `live · ${m.pendingTools[m.pendingTools.length - 1]}` : 'live', 'live') : '';
+  const isCodex = /^rollout-/.test(pathLib.basename(s.filePath));
+  const metaChips = [
+    m.cwd ? chip(pathLib.basename(m.cwd), { title: m.cwd }) : '',
+    m.gitBranch ? chip(m.gitBranch, { mono: true }) : '',
+    ...s.models.map((model) => chip(model, { tone: 'purple' })),
+    m.startTime ? chip(new Date(m.startTime).toLocaleString(), {}) : '',
+    s.durationMs !== undefined ? chip(formatDuration(s.durationMs), {}) : '',
+    m.version ? chip('v' + m.version, { mono: true }) : '',
+    ...(ann.tags ?? []).map((t) => chip('#' + t, { tone: 'teal' })),
+  ].join('');
+  const header = hero({
+    eyebrow: `${isCodex ? 'Codex session' : 'Claude Code session'} ${ann.pinned ? '· pinned' : ''}`,
+    title: s.title,
+    meta: metaChips,
+    extra: (live ? `<div class="chips">${live}</div>` : '') + (ann.note ? `<div class="note">${esc(ann.note)}</div>` : ''),
+    actions: [
+      action('conversation', 'Conversation', { variant: 'primary' }),
+      action('resume', 'Resume', {}),
+      action('export', 'Export', {}),
+      action('compare', 'Compare', {}),
+      action('openTranscript', 'Raw JSONL', { index: 0 }),
+      action('pin', ann.pinned ? 'Unpin' : 'Pin', { variant: 'ghost' }),
+      action('tags', 'Tags', { variant: 'ghost' }),
+      action('note', 'Note', { variant: 'ghost' }),
+      action('refresh', 'Refresh', { variant: 'ghost' }),
+    ].join(''),
+  });
+
+  const details = section(
+    'details',
+    'Session details',
+    `<table class="kv">
       <tr><th>Project</th><td>${esc(m.cwd ?? '-')}</td></tr>
       <tr><th>Branch</th><td>${esc(m.gitBranch ?? '-')}</td></tr>
       <tr><th>Model(s)</th><td>${esc(s.models.join(', ') || '-')}</td></tr>
@@ -82,23 +101,126 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
       <tr><th>Duration</th><td>${esc(formatDuration(s.durationMs))}</td></tr>
       <tr><th>CLI version</th><td>${esc(m.version ?? '-')}</td></tr>
       <tr><th>Entrypoint</th><td>${esc(m.entrypoint ?? '-')}</td></tr>
-      <tr><th>Session</th><td>${esc(s.sessionId)}</td></tr>
+      <tr><th>Session</th><td><code>${esc(s.sessionId)}</code></td></tr>
       <tr><th>Lines</th><td>${n(m.lines)}${m.badLines ? ` <span class="muted">(${n(m.badLines)} unparseable, skipped)</span>` : ''}${m.skipped ? ` <span class="err">(${esc(m.skipped)})</span>` : ''}</td></tr>
-    </table>`;
+    </table>`,
+    { collapsible: true, open: false },
+  );
 
-  const tokens = `
-    <h2>Tokens</h2>
-    ${cards('Session incl. subagents', s.totalUsage)}
-    ${cards('Main thread only', m.usage)}`;
+  const hit = cacheHitRate(s.totalUsage);
+  const errorCount = s.totalToolErrors.length;
+  const overviewKpis = kpis([
+    {
+      label: 'Cost (est.)',
+      value: esc(formatUsd(totalCost)),
+      sub: m.reportedCostUsd !== undefined ? `Claude Code: ${esc(formatUsd(m.reportedCostUsd))}` : 'API list prices',
+      tone: 'green',
+    },
+    { label: 'Tokens', value: tok(totalTokens(s.totalUsage)), sub: `main ${tok(totalTokens(m.usage))}`, tone: 'blue' },
+    { label: 'Cache hit', value: esc(formatPercent(hit)), sub: `${tok(s.totalUsage.cacheRead)} read from cache`, tone: hit !== undefined && hit < 0.7 ? 'orange' : 'teal' },
+    { label: 'Output', value: tok(s.totalUsage.output), sub: `${n(m.apiMessages)} API messages`, tone: 'purple' },
+    { label: 'Tool calls', value: n(s.totalToolCalls), sub: errorCount ? `<span class="err">${n(errorCount)} failed</span>` : 'no errors', tone: errorCount ? 'red' : 'blue' },
+    { label: 'Subagents', value: n(s.agentCount), sub: `${n(Object.keys(s.totalFileEdits).length)} files changed`, tone: 'orange' },
+  ]);
+
+  const tokensBody = `${usageCards('Session incl. subagents', s.totalUsage, totalCost)}
+    ${usageCards('Main thread only', m.usage, pricing.costByModel(m.usageByModel))}
+    <p class="muted small">Estimated from public API list prices; cache writes are priced by their 5-minute or 1-hour TTL.${
+      m.reportedCostUsd !== undefined ? ` Claude Code recorded ${esc(formatUsd(m.reportedCostUsd))} itself (may cover only the latest run after a resume).` : ''
+    } Override prices with <code>agentwatch.pricing</code>.${unpriced.length ? ` No price for: ${esc(unpriced.join(', '))} (counted as $0).` : ''}</p>`;
+
+  const peak = m.context.reduce((mx, p) => Math.max(mx, p.tokens), 0);
+  const contextChartHtml = `
+    <div class="legend"><span>Peak <b>${tok(peak)}</b></span><span>${n(m.apiMessages)} API messages</span>${
+      m.compactions.length ? `<span><span class="swatch-marker">┆</span> ${n(m.compactions.length)} compaction(s)</span>` : ''
+    }</div>
+    ${lineChart(
+      m.context.map((p) => ({ x: p.i, y: p.tokens, title: `#${p.i + 1} · ${formatTokens(p.tokens)} tokens${p.timestamp ? ' · ' + new Date(p.timestamp).toLocaleTimeString() : ''}` })),
+      m.compactions.map((c) => ({ x: c.i, y: 0, title: `Compaction${c.timestamp ? ' at ' + new Date(c.timestamp).toLocaleString() : ''}` })),
+    )}
+    <div class="axis-note"><span>${time(m.startTime)}</span><span>${time(m.endTime)}</span></div>`;
+
+  const insightItems = sessionInsights(s, pricing);
+  const insights = insightItems.length
+    ? `<div class="caption">Insights</div><div class="insights">${insightItems
+        .map(
+          (i) =>
+            `<div class="insight ${i.severity}"><div class="ic"></div><div><div class="t">${esc(i.title)}</div><div class="d">${esc(i.detail)}</div></div></div>`,
+        )
+        .join('')}</div>`
+    : '';
+
+  const sizes = Object.values(s.totalResultSizes).sort((a, b) => b.chars - a.chars);
+  const totalChars = sizes.reduce((x, r) => x + r.chars, 0) || 1;
+  const sizeRows = sizes.slice(0, 20).map(
+    (r) =>
+      `<tr><td>${esc(toolLabel(r.name))}</td><td class="num">${n(r.calls)}</td><td class="num">~${tok(approxTokens(r.chars))}</td><td class="num">~${tok(approxTokens(r.chars / Math.max(r.calls, 1)))}</td><td>${shareBar(r.chars / totalChars)}</td></tr>`,
+  );
+  const bigRows = s.totalLargestResults.slice(0, 10).map(
+    (r) =>
+      `<tr><td class="ts">${time(r.timestamp)}</td><td>${esc(toolLabel(r.tool))}${r.agent ? `<div class="muted">${esc(r.agent)}</div>` : ''}</td><td><pre>${esc(r.input || '-')}</pre></td><td class="num">~${tok(approxTokens(r.chars))}</td></tr>`,
+  );
+  const readRows = Object.values(s.totalFileReads)
+    .filter((r) => r.reads > 1)
+    .sort((a, b) => b.reads - a.reads || b.chars - a.chars)
+    .slice(0, 15)
+    .map((r) => `<tr><td>${esc(r.path)}</td><td class="num">${n(r.reads)}</td><td class="num">~${tok(approxTokens(r.chars))}</td></tr>`);
+  const contextSection = section(
+    'context',
+    'Context',
+    `${contextChartHtml}
+    <h3>What fills the context</h3>
+    <p class="muted small">Tool results by size (about 4 characters per token). They stay in the context until a compaction.</p>
+    ${table(['Tool', 'Results', 'Total', 'Average', 'Share'], sizeRows)}
+    ${bigRows.length ? `<h3>Largest results</h3>${table(['Time', 'Tool', 'Input', 'Size'], bigRows, 3)}` : ''}
+    ${readRows.length ? `<h3>Files read more than once</h3>${table(['File', 'Reads', 'Total'], readRows)}` : ''}`,
+    { subtitle: `peak ${formatTokens(peak)}` },
+  );
+
+  const timed = flattenAgents(s.subagents).filter((a) => a.stats.startTime && a.stats.endTime).slice(0, 200);
+  let gantt = '';
+  if (timed.length) {
+    const t0 = Math.min(Date.parse(m.startTime ?? '') || Infinity, ...timed.map((a) => Date.parse(a.stats.startTime!)));
+    const t1 = Math.max(Date.parse(m.endTime ?? '') || 0, ...timed.map((a) => Date.parse(a.stats.endTime!)));
+    const rows: GanttRow[] = timed.map((a) => ({
+      label: `${a.agentType} · ${a.description}`,
+      start: Date.parse(a.stats.startTime!),
+      end: Date.parse(a.stats.endTime!),
+      error: a.status === 'error' || a.status === 'failed',
+      depth: a.depth,
+      title: `${a.agentType} · ${a.description}\n${formatDuration(Date.parse(a.stats.endTime!) - Date.parse(a.stats.startTime!))} · ${formatTokens(totalTokens(a.totalUsage))} tokens`,
+    }));
+    gantt = `<h3>Timeline</h3>${ganttChart(rows, t0, t1)}<div class="axis-note"><span>${time(new Date(t0).toISOString())}</span><span>${time(new Date(t1).toISOString())}</span></div>`;
+  }
+
+  let prevCost = 0;
+  const commitRows = m.commits.map((c) => {
+    const cost = pricing.costByModel(c.usageAtCommit);
+    const delta = cost - prevCost;
+    prevCost = cost;
+    return `<tr><td class="ts">${time(c.timestamp)}</td><td>${c.hash ? `<code>${esc(c.hash)}</code>` : '-'}</td><td>${c.branch ? chip(c.branch, { mono: true }) : ''}</td><td>${
+      c.failed
+        ? `<span class="err">failed</span> <span class="muted">${esc(c.command)}</span>`
+        : c.message
+          ? esc(c.message)
+          : `<span class="muted">(no commit output) ${esc(c.command)}</span>`
+    }</td><td class="num">${esc(formatUsd(delta))}</td></tr>`;
+  });
+  const commits = commitRows.length
+    ? section('commits', 'Commits', `${table(['Time', 'Hash', 'Branch', 'Message', 'Cost since previous'], commitRows, 4)}<p class="muted small">Cost since previous counts the main thread only.</p>`, {
+        count: commitRows.length,
+      })
+    : '';
 
   const modelRows = Object.entries(s.totalByModel)
+    .filter(([, u]) => totalTokens(u) > 0)
     .sort((a, b) => totalTokens(b[1]) - totalTokens(a[1]))
     .map(
       ([model, u]) =>
-        `<tr><td>${esc(model)}</td><td class="num">${n(u.messages)}</td><td class="num">${tok(u.input)}</td><td class="num">${tok(u.output)}</td><td class="num">${tok(u.cacheWrite)}</td><td class="num">${tok(u.cacheRead)}</td><td class="num">${tok(totalTokens(u))}</td></tr>`,
+        `<tr><td>${chip(model, { tone: 'purple' })}</td><td class="num">${n(u.messages)}</td><td class="num">${tok(u.input)}</td><td class="num">${tok(u.output)}</td><td class="num">${tok(u.cacheWrite)}</td><td class="num">${tok(u.cacheRead)}</td><td class="num">${tok(totalTokens(u))}</td><td class="num">${esc(formatPercent(cacheHitRate(u)))}</td><td class="num">${esc(formatUsd(pricing.cost(model, u)))}</td></tr>`,
     );
-  const models = `<h2>Per model (incl. subagents)</h2>${table(
-    ['Model', 'API msgs', 'Input', 'Output', 'Cache write', 'Cache read', 'Total'],
+  const models = `<h3>Per model (incl. subagents)</h3>${table(
+    ['Model', 'API msgs', 'Input', 'Output', 'Cache write', 'Cache read', 'Total', 'Cache hit', 'Cost'],
     modelRows,
   )}`;
 
@@ -106,22 +228,24 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     let open = '';
     if (a.transcriptPath) {
       transcripts.push(a.transcriptPath);
-      open = `<button class="link" data-action="transcript" data-index="${transcripts.length - 1}" title="Open transcript">open</button>`;
+      open = action('openTranscript', 'open', { index: transcripts.length - 1, link: true, title: 'Open transcript' });
     }
     const own = a.transcriptPath ? tok(totalTokens(a.stats.usage)) : a.reportedTokens !== undefined ? `~${tok(a.reportedTokens)}` : '-';
     const nested = a.children.length ? tok(totalTokens(a.totalUsage)) : '';
     const calls = a.transcriptPath ? n(a.stats.toolCalls) : a.spawn?.result?.totalToolUseCount !== undefined ? n(a.spawn.result.totalToolUseCount) : '-';
+    const cost = a.transcriptPath ? esc(formatUsd(pricing.costByModel(a.stats.usageByModel))) : '-';
     // Inline style attributes are blocked by the CSP, so indentation uses classes.
     const depthClass = 'd' + Math.min(a.depth, MAX_INDENT);
     return `<tr>
-      <td><span class="${depthClass}">${a.depth > 1 ? '&#8627; ' : ''}${esc(a.agentType)}</span></td>
+      <td><span class="${depthClass} cell-strong">${a.depth > 1 ? '&#8627; ' : ''}${esc(a.agentType)}</span></td>
       <td>${esc(a.description)}</td>
-      <td>${esc(a.model ?? '-')}</td>
+      <td>${a.model ? chip(a.model, { tone: 'purple' }) : '-'}</td>
       <td class="num">${own}</td>
       <td class="num">${nested}</td>
+      <td class="num">${cost}</td>
       <td class="num">${calls}</td>
       <td class="num">${esc(formatDuration(a.durationMs))}</td>
-      <td class="${a.status === 'error' || a.status === 'failed' ? 'err' : ''}">${esc(a.status ?? '-')}</td>
+      <td>${statusPill(a.status)}</td>
       <td>${open}</td>
     </tr>`;
   });
@@ -132,118 +256,78 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     (s.spawnNodesSkipped
       ? `<p class="muted">${n(s.spawnNodesSkipped)} more subagent spawn(s) without a transcript not shown (per-session limit reached).</p>`
       : '');
-  const agents = `<h2>Subagents (${n(s.agentCount)})</h2>${agentsSkipped}${table(
-    ['Type', 'Description', 'Model', 'Tokens', 'Incl. nested', 'Tool calls', 'Duration', 'Status', ''],
-    agentRows,
-    3,
-  )}`;
+  const agents = s.agentCount
+    ? section(
+        'agents',
+        'Subagents',
+        `${agentsSkipped}${table(['Type', 'Description', 'Model', 'Tokens', 'Incl. nested', 'Cost', 'Tool calls', 'Duration', 'Status', ''], agentRows, 3)}${gantt}`,
+        { count: s.agentCount },
+      )
+    : '';
+
+  const fileRows = Object.values(s.totalFileEdits)
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((f) => {
+      files.push(f.path);
+      const i = files.length - 1;
+      return `<tr><td>${action('openFile', pathLib.basename(f.path), { index: i, link: true, title: f.path })}<div class="muted small">${esc(pathLib.dirname(f.path))}</div></td><td class="num">${n(f.edits)}</td><td class="num">${n(f.writes)}</td><td class="num ${f.failed ? 'err' : ''}">${n(f.failed)}</td><td>${action('fileEdits', 'Changes', { index: i, variant: 'ghost', title: 'Show the edits made in this session' })}</td></tr>`;
+    });
+  const filesSection = fileRows.length ? section('files', 'Files changed', table(['File', 'Edits', 'Writes', 'Failed', ''], fileRows), { count: fileRows.length }) : '';
+
+  const errorRows = s.totalToolErrors.map(
+    (e) =>
+      `<tr><td class="ts">${time(e.timestamp)}</td><td class="cell-strong">${esc(toolLabel(e.tool))}${e.agent ? `<div class="muted">${esc(e.agent)}</div>` : ''}</td><td>${
+        e.input ? `<pre>${esc(e.input)}</pre>` : ''
+      }<pre class="err">${esc(e.error || '(no error text)')}</pre></td></tr>`,
+  );
+  const errors = errorRows.length ? section('errors', 'Tool errors', table(['Time', 'Tool', 'Input / error'], errorRows, 99), { count: errorRows.length, collapsible: true }) : '';
 
   const mcpRows: string[] = [];
   for (const srv of Object.values(s.totalMcp).sort((a, b) => b.calls - a.calls)) {
     for (const t of sortTools(srv.tools)) {
       mcpRows.push(
-        `<tr><td>${esc(srv.server)}</td><td>${esc(t.name)}</td><td class="num">${n(t.calls)}</td><td class="num ${t.errors ? 'err' : ''}">${n(t.errors)}</td></tr>`,
+        `<tr><td>${chip(srv.server, { tone: 'teal' })}</td><td>${esc(t.name)}</td><td class="num">${n(t.calls)}</td><td class="num">${t.errors ? pill(String(t.errors), 'err') : '0'}</td></tr>`,
       );
     }
   }
-  const mcp = `<h2>MCP tools (incl. subagents)</h2>${table(['Server', 'Tool', 'Calls', 'Errors'], mcpRows, 2)}`;
+  const mcp = `<div><h3>MCP tools</h3>${table(['Server', 'Tool', 'Calls', 'Errors'], mcpRows, 2)}</div>`;
 
   const toolRows = sortTools(s.totalTools).map(
     (t) =>
-      `<tr><td>${esc(t.name)}</td><td class="num">${n(t.calls)}</td><td class="num">${n(m.tools[t.name]?.calls ?? 0)}</td><td class="num ${t.errors ? 'err' : ''}">${n(t.errors)}</td></tr>`,
+      `<tr><td class="cell-strong">${esc(t.name)}</td><td class="num">${n(t.calls)}</td><td class="num">${n(m.tools[t.name]?.calls ?? 0)}</td><td class="num">${t.errors ? pill(String(t.errors), 'err') : '0'}</td></tr>`,
   );
-  const tools = `<h2>Tools (incl. subagents)</h2>${table(['Tool', 'Calls', 'Main only', 'Errors'], toolRows)}`;
+  const tools = `<div><h3>Built-in tools</h3>${table(['Tool', 'Calls', 'Main only', 'Errors'], toolRows)}</div>`;
 
   const skillRows = Object.entries(s.totalSkills)
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${n(v)}</td></tr>`);
-  const skills = skillRows.length ? `<h2>Skills</h2>${table(['Skill', 'Calls'], skillRows)}` : '';
+  const skills = skillRows.length ? `<h3>Skills</h3>${table(['Skill', 'Calls'], skillRows)}` : '';
 
   const promptItems = m.prompts.map(
-    (p) => `<li><span class="ts">${time(p.timestamp)}</span><span class="pt">${esc(p.text)}</span></li>`,
+    (p) => `<li><span class="ts">${time(p.timestamp)}</span><div class="pt">${esc(p.text)}</div></li>`,
   );
-  const prompts = `<h2>User prompts (${n(m.prompts.length)})</h2>${
-    promptItems.length ? `<ol class="timeline">${promptItems.join('')}</ol>` : '<p class="muted">None</p>'
-  }`;
+  const prompts = section('prompts', 'User prompts', promptItems.length ? `<ol class="timeline">${promptItems.join('')}</ol>` : '<div class="empty">None</div>', {
+    count: m.prompts.length,
+    collapsible: true,
+  });
+  const toolsSection = section('tools', 'Tools', `<div class="grid-2">${tools}${mcp}</div>${skills}`, { count: s.totalToolCalls, collapsible: true });
+  const overview = section('overview', 'Overview', `${overviewKpis}${insights}`, {});
+  const navLinks: Array<[string, string]> = [['overview', 'Overview'], ['tokens', 'Tokens'], ['context', 'Context']];
+  if (agents) navLinks.push(['agents', 'Subagents']);
+  if (commits) navLinks.push(['commits', 'Commits']);
+  if (filesSection) navLinks.push(['files', 'Files']);
+  if (errors) navLinks.push(['errors', 'Errors']);
+  navLinks.push(['tools', 'Tools'], ['prompts', 'Prompts'], ['details', 'Details']);
 
-  const csp = `default-src 'none'; style-src ${cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src ${cspSource};`;
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="${csp}">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${esc(s.title)}</title>
-<style nonce="${nonce}">${STYLE}</style>
-</head>
-<body>
-${header}
-${tokens}
-${models}
-${agents}
-${mcp}
-${tools}
-${skills}
-${prompts}
-<script nonce="${nonce}">${SCRIPT}</script>
-</body>
-</html>`;
-  return { html, transcripts };
+  const html = page(
+    s.title,
+    [header, nav(navLinks), overview, section('tokens', 'Tokens and cost', tokensBody + models, { collapsible: true }), contextSection, agents, commits, filesSection, errors, toolsSection, prompts, details].join('\n'),
+    nonce,
+    cspSource,
+  );
+  return { html, transcripts, files };
 }
 
 function sortTools(tools: Record<string, ToolStat>): ToolStat[] {
   return Object.values(tools).sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 }
-
-export function renderMessage(message: string, nonce: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}';">
-<style nonce="${nonce}">${STYLE}</style></head><body><p class="muted">${esc(message)}</p></body></html>`;
-}
-
-const MAX_INDENT = 8;
-const INDENT_CSS = Array.from({ length: MAX_INDENT }, (_, i) => `.d${i + 1} { padding-left: ${i * 16}px; }`).join('\n');
-
-const STYLE = INDENT_CSS + `
-body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); padding: 0 20px 40px; }
-h1 { font-size: 1.5em; margin: 16px 0 8px; }
-h2 { font-size: 1.15em; margin: 24px 0 8px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 4px; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); vertical-align: top; }
-thead th { color: var(--vscode-descriptionForeground); font-weight: 600; }
-tbody tr:hover { background: var(--vscode-list-hoverBackground); }
-.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-table.kv { width: auto; }
-table.kv th { color: var(--vscode-descriptionForeground); font-weight: normal; padding-right: 24px; }
-.muted { color: var(--vscode-descriptionForeground); }
-.err { color: var(--vscode-errorForeground); }
-.cards-row { margin: 8px 0; }
-.cards-label { color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
-.cards { display: flex; flex-wrap: wrap; gap: 8px; }
-.card { background: var(--vscode-sideBar-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 8px 12px; min-width: 110px; }
-.card-k { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
-.card-v { font-size: 1.4em; font-weight: 600; }
-.actions { margin: 8px 0 12px; display: flex; gap: 8px; }
-button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; font-family: inherit; }
-button:hover { background: var(--vscode-button-hoverBackground); }
-button.link { background: none; color: var(--vscode-textLink-foreground); padding: 0; }
-button.link:hover { text-decoration: underline; background: none; }
-ol.timeline { list-style: none; padding: 0; margin: 0; }
-ol.timeline li { display: flex; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--vscode-panel-border); }
-ol.timeline .ts { color: var(--vscode-descriptionForeground); white-space: nowrap; min-width: 170px; }
-ol.timeline .pt { white-space: pre-wrap; word-break: break-word; }
-`;
-
-// Only sends an action + numeric index; the extension resolves the index to a known path.
-const SCRIPT = `
-(function () {
-  const vscode = acquireVsCodeApi();
-  document.addEventListener('click', function (e) {
-    const el = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
-    if (!el) return;
-    const action = el.getAttribute('data-action');
-    if (action === 'refresh') vscode.postMessage({ command: 'refresh' });
-    if (action === 'transcript') vscode.postMessage({ command: 'openTranscript', index: Number(el.getAttribute('data-index')) });
-  });
-})();
-`;

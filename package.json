@@ -1,8 +1,8 @@
 {
   "name": "agentwatch",
   "displayName": "Agent Session Watch",
-  "description": "Browse past Claude Code sessions: subagents, token usage and MCP tool calls.",
-  "version": "0.1.0",
+  "description": "Browse past Claude Code sessions: cost, tokens, subagents, MCP tool calls, edited files and conversations.",
+  "version": "0.3.0",
   "publisher": "agentwatch",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -23,12 +23,14 @@
     "Visualization"
   ],
   "keywords": [
+    "ai agents",
     "claude",
     "claude code",
-    "tokens",
+    "cost",
+    "dashboard",
     "mcp",
     "subagents",
-    "ai agents",
+    "tokens",
     "usage"
   ],
   "capabilities": {
@@ -59,6 +61,10 @@
         {
           "id": "agentwatch.sessions",
           "name": "Sessions"
+        },
+        {
+          "id": "agentwatch.fileHistory",
+          "name": "Current File History"
         }
       ]
     },
@@ -86,31 +92,275 @@
         "title": "Toggle Filter: Current Workspace Only",
         "category": "AgentWatch",
         "icon": "$(filter)"
+      },
+      {
+        "command": "agentwatch.search",
+        "title": "Search Sessions",
+        "category": "AgentWatch",
+        "icon": "$(search)"
+      },
+      {
+        "command": "agentwatch.setFilter",
+        "title": "Filter Sessions…",
+        "category": "AgentWatch",
+        "icon": "$(list-filter)"
+      },
+      {
+        "command": "agentwatch.clearFilter",
+        "title": "Clear Session Filters",
+        "category": "AgentWatch",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "agentwatch.openDashboard",
+        "title": "Open Usage Dashboard",
+        "category": "AgentWatch",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "agentwatch.compareSessions",
+        "title": "Compare Sessions…",
+        "category": "AgentWatch",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "agentwatch.viewConversation",
+        "title": "View Conversation",
+        "category": "AgentWatch",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "agentwatch.exportSession",
+        "title": "Export Session as Markdown…",
+        "category": "AgentWatch",
+        "icon": "$(export)"
+      },
+      {
+        "command": "agentwatch.resumeSession",
+        "title": "Resume Session in Terminal",
+        "category": "AgentWatch",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "agentwatch.togglePin",
+        "title": "Pin / Unpin Session",
+        "category": "AgentWatch",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "agentwatch.editTags",
+        "title": "Edit Session Tags…",
+        "category": "AgentWatch",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "agentwatch.editNote",
+        "title": "Edit Session Note…",
+        "category": "AgentWatch",
+        "icon": "$(note)"
+      },
+      {
+        "command": "agentwatch.showToolError",
+        "title": "Show Tool Error",
+        "category": "AgentWatch"
+      },
+      {
+        "command": "agentwatch.openEditedFile",
+        "title": "Open Edited File",
+        "category": "AgentWatch",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "agentwatch.showFileEdits",
+        "title": "Show Changes Made in Session",
+        "category": "AgentWatch",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "agentwatch.searchPrompts",
+        "title": "Search Prompts…",
+        "category": "AgentWatch",
+        "icon": "$(symbol-string)"
+      },
+      {
+        "command": "agentwatch.findCommit",
+        "title": "Find Session for Commit…",
+        "category": "AgentWatch",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "agentwatch.exportReport",
+        "title": "Export Usage Report…",
+        "category": "AgentWatch",
+        "icon": "$(report)"
+      },
+      {
+        "command": "agentwatch.fileHistory",
+        "title": "Show Sessions That Changed This File",
+        "category": "AgentWatch",
+        "icon": "$(history)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "agentwatch.filterCurrentWorkspace",
+          "command": "agentwatch.search",
+          "when": "view == agentwatch.sessions",
+          "group": "navigation@0"
+        },
+        {
+          "command": "agentwatch.setFilter",
           "when": "view == agentwatch.sessions",
           "group": "navigation@1"
         },
         {
-          "command": "agentwatch.refresh",
+          "command": "agentwatch.openDashboard",
           "when": "view == agentwatch.sessions",
           "group": "navigation@2"
+        },
+        {
+          "command": "agentwatch.refresh",
+          "when": "view == agentwatch.sessions",
+          "group": "navigation@3"
+        },
+        {
+          "command": "agentwatch.filterCurrentWorkspace",
+          "when": "view == agentwatch.sessions",
+          "group": "navigation@4"
+        },
+        {
+          "command": "agentwatch.clearFilter",
+          "when": "view == agentwatch.sessions && agentwatch.sessionFilterActive",
+          "group": "1_filter@2"
+        },
+        {
+          "command": "agentwatch.compareSessions",
+          "when": "view == agentwatch.sessions",
+          "group": "2_tools@1"
+        },
+        {
+          "command": "agentwatch.searchPrompts",
+          "when": "view == agentwatch.sessions",
+          "group": "2_tools@2"
+        },
+        {
+          "command": "agentwatch.findCommit",
+          "when": "view == agentwatch.sessions",
+          "group": "2_tools@3"
+        },
+        {
+          "command": "agentwatch.exportReport",
+          "when": "view == agentwatch.sessions",
+          "group": "2_tools@4"
         }
       ],
       "view/item/context": [
         {
           "command": "agentwatch.openSession",
-          "when": "view == agentwatch.sessions && viewItem == session",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
           "group": "inline@1"
         },
         {
-          "command": "agentwatch.openTranscript",
-          "when": "view == agentwatch.sessions && (viewItem == session || viewItem == agent)",
+          "command": "agentwatch.viewConversation",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
           "group": "inline@2"
+        },
+        {
+          "command": "agentwatch.openTranscript",
+          "when": "view == agentwatch.sessions && viewItem == agent",
+          "group": "inline@2"
+        },
+        {
+          "command": "agentwatch.showFileEdits",
+          "when": "view == agentwatch.sessions && viewItem == file",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentwatch.openSession",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "1_open@1"
+        },
+        {
+          "command": "agentwatch.viewConversation",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "1_open@2"
+        },
+        {
+          "command": "agentwatch.openTranscript",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "1_open@3"
+        },
+        {
+          "command": "agentwatch.resumeSession",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "2_act@1"
+        },
+        {
+          "command": "agentwatch.exportSession",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "2_act@2"
+        },
+        {
+          "command": "agentwatch.compareSessions",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "2_act@3"
+        },
+        {
+          "command": "agentwatch.togglePin",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "3_annotate@1"
+        },
+        {
+          "command": "agentwatch.editTags",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "3_annotate@2"
+        },
+        {
+          "command": "agentwatch.editNote",
+          "when": "view == agentwatch.sessions && viewItem =~ /^session/",
+          "group": "3_annotate@3"
+        },
+        {
+          "command": "agentwatch.openEditedFile",
+          "when": "view == agentwatch.sessions && viewItem == file",
+          "group": "1_open@1"
+        },
+        {
+          "command": "agentwatch.showFileEdits",
+          "when": "view == agentwatch.sessions && viewItem == file",
+          "group": "1_open@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "agentwatch.showToolError",
+          "when": "false"
+        },
+        {
+          "command": "agentwatch.openEditedFile",
+          "when": "false"
+        },
+        {
+          "command": "agentwatch.showFileEdits",
+          "when": "false"
+        },
+        {
+          "command": "agentwatch.fileHistory",
+          "when": "editorIsOpen"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "agentwatch.fileHistory",
+          "when": "resourceScheme == file",
+          "group": "9_agentwatch"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "agentwatch.fileHistory",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "9_agentwatch"
         }
       ]
     },
@@ -132,6 +382,141 @@
           "type": "boolean",
           "default": true,
           "description": "Show token usage of the most recent session of the current workspace in the status bar."
+        },
+        "agentwatch.statusBar.showCost": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the estimated cost next to the token count in the status bar."
+        },
+        "agentwatch.pricing": {
+          "type": "object",
+          "default": {},
+          "scope": "machine",
+          "markdownDescription": "Override or add model prices in USD per million tokens, keyed by model id prefix (longest prefix wins). Example: `{ \"claude-opus-5-5\": { \"input\": 4, \"output\": 20, \"cacheWrite\": 5, \"cacheRead\": 0.2 } }`. `cacheWrite` (5-minute TTL) defaults to 1.25× input, `cacheWrite1h` to 2× input and `cacheRead` to 0.1× input.",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "input",
+              "output"
+            ],
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite1h": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "agentwatch.live.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "While a session is running (transcript modified in the last 2 minutes), show a live indicator and the running tool in the status bar, and reload open session panels when the transcript changes."
+        },
+        "agentwatch.budget.sessionUsd": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Warn once when the most recent session of the workspace reaches this estimated cost in USD. 0 disables."
+        },
+        "agentwatch.budget.dailyUsd": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Warn once per day when today's estimated cost across all sessions reaches this amount in USD. 0 disables."
+        },
+        "agentwatch.dashboard.days": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Default time range of the usage dashboard in days (0 = all time)."
+        },
+        "agentwatch.claudeCommand": {
+          "type": "string",
+          "default": "claude",
+          "scope": "machine",
+          "description": "Command used by \"Resume Session in Terminal\" (runs `<command> --resume <sessionId>`)."
+        },
+        "agentwatch.notify.onFinish": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify when a session that is running finishes its turn."
+        },
+        "agentwatch.notify.onWaiting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify when a running session has been waiting on a tool call (permission prompt or long command) for a while."
+        },
+        "agentwatch.notify.waitingSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "description": "Seconds a tool call can wait before the \"waiting\" notification."
+        },
+        "agentwatch.notify.onlyWhenUnfocused": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only notify while the VS Code window is not focused."
+        },
+        "agentwatch.statusBar.showBlock": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the current 5-hour usage block (tokens and time to reset) in the status bar."
+        },
+        "agentwatch.blocks.tokenLimit": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Optional token budget per 5-hour block; shows usage as a percentage and warns at 90%. 0 shows raw tokens."
+        },
+        "agentwatch.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show \"Edited in N Claude sessions\" at the top of files changed by Claude Code."
+        },
+        "agentwatch.prompts.sessionLimit": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "description": "How many recent sessions Search Prompts and Find Session for Commit scan."
+        },
+        "agentwatch.claudeConfigPath": {
+          "type": "string",
+          "default": "~/.claude.json",
+          "scope": "machine",
+          "description": "Claude Code config file read for configured MCP server names (only names are read)."
+        },
+        "agentwatch.codex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show OpenAI Codex CLI sessions (basic support)."
+        },
+        "agentwatch.codex.sessionsDir": {
+          "type": "string",
+          "default": "~/.codex/sessions",
+          "scope": "machine",
+          "description": "Directory containing Codex CLI rollout transcripts."
+        },
+        "agentwatch.codexCommand": {
+          "type": "string",
+          "default": "codex",
+          "scope": "machine",
+          "description": "Command used to resume a Codex session (runs `<command> resume <id>`)."
         }
       }
     }
@@ -140,7 +525,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
-    "test": "node --test out/test/parser.test.js out/test/render.test.js out/test/security.test.js",
+    "test": "node --test out/test/parser.test.js out/test/render.test.js out/test/security.test.js out/test/features.test.js out/test/more.test.js out/test/fixes.test.js",
     "scan": "node out/scripts/scan.js"
   },
   "devDependencies": {

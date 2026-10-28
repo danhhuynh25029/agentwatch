@@ -5,12 +5,19 @@ import {
   AgentMeta,
   AgentSpawn,
   AgentSpawnResult,
+  CommitEntry,
+  ContextPoint,
+  FileEditStat,
+  FileReadStat,
+  LargeResult,
   McpServerStat,
   ModelUsage,
   PromptEntry,
   SessionSummary,
   SubagentNode,
   TokenUsage,
+  ToolErrorEntry,
+  ToolResultSize,
   ToolStat,
   TranscriptStats,
 } from './types';
@@ -21,6 +28,28 @@ const MAX_PROMPTS = 500;
 const MAX_PROMPT_CHARS = 300;
 const MAX_SUBAGENT_DIR_DEPTH = 4;
 const SUBAGENT_PARSE_CONCURRENCY = 4;
+const MAX_TOOL_ERRORS = 200;
+const MAX_SESSION_TOOL_ERRORS = 500;
+const MAX_ERROR_CHARS = 500;
+const MAX_INPUT_PREVIEW_CHARS = 300;
+const MAX_FILE_EDITS = 2000;
+const MAX_CONTEXT_POINTS = 300;
+const MAX_COMPACTIONS = 200;
+const MAX_PENDING_TOOLS = 5;
+const MAX_LARGE_RESULTS = 20;
+const MAX_FILE_READS = 2000;
+const MAX_COMMITS = 200;
+/** `git commit` as a command (start of the line or after a shell operator), not inside other text. */
+const GIT_COMMIT_RE = /(?:^|&&|\|\||[;\n(|])\s*git\s+(?:-[Cc]\s+\S+\s+)*commit\b/;
+
+/** True if a Bash command runs `git commit` (heredoc bodies are ignored). */
+export function isGitCommitCommand(command: string): boolean {
+  const heredoc = command.indexOf('<<');
+  return GIT_COMMIT_RE.test(heredoc >= 0 ? command.slice(0, heredoc) : command);
+}
+const COMMIT_OUTPUT_RE = /^\[([^\]\s]+)(?: \(root-commit\))? ([0-9a-f]{7,40})\] (.*)$/m;
+/** Tools that modify files; the path is in input.file_path (or notebook_path). */
+export const FILE_EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
 
 /** Size limits for untrusted on-disk input. Overridable in tests. */
 export interface ParseLimits {
@@ -166,6 +195,65 @@ export function cleanPromptText(raw: string): string | undefined {
 interface PendingUsage {
   model?: string;
   usage: TokenUsage;
+  /** Epoch ms of the first line carrying this message (or the latest timestamp seen before it). */
+  t?: number;
+}
+
+/** UTC hour of an epoch-ms time as YYYY-MM-DDTHH. */
+export function utcHour(t: number): string {
+  return new Date(t).toISOString().slice(0, 13);
+}
+
+/** Parse `[branch abc1234] message` from git commit output. */
+export function parseCommitOutput(text: string): { branch: string; hash: string; message: string } | undefined {
+  const m = COMMIT_OUTPUT_RE.exec(text);
+  return m ? { branch: m[1], hash: m[2], message: m[3].trim() } : undefined;
+}
+
+/** Local calendar day of an epoch-ms time as YYYY-MM-DD. */
+export function localDay(t: number): string {
+  const d = new Date(t);
+  const pad = (v: number) => String(v).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Text content of a tool_result block (string or list of text blocks). */
+export function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const c of content) {
+    if (isObj(c) && c.type === 'text' && typeof c.text === 'string') parts.push(c.text);
+  }
+  return parts.join('\n');
+}
+
+/** JSON of a tool input, cut to `max` chars (never throws). */
+export function previewJson(v: unknown, max: number): string {
+  let text: string;
+  try {
+    text = JSON.stringify(v) ?? '';
+  } catch {
+    text = '';
+  }
+  return text.length > max ? text.slice(0, max - 1) + '…' : text;
+}
+
+/** Keep at most `max` points, preserving the first and last and the peak of each bucket. */
+export function downsample(points: ContextPoint[], max: number): ContextPoint[] {
+  if (points.length <= max) return points;
+  const out: ContextPoint[] = [];
+  const size = points.length / max;
+  for (let b = 0; b < max; b++) {
+    const from = Math.floor(b * size);
+    const to = Math.min(points.length, Math.floor((b + 1) * size));
+    let best = points[from];
+    for (let i = from + 1; i < to; i++) if (points[i].tokens > best.tokens) best = points[i];
+    out.push(best);
+  }
+  out[0] = points[0];
+  out[out.length - 1] = points[points.length - 1];
+  return out;
 }
 
 /**
@@ -178,6 +266,22 @@ export class TranscriptAccumulator {
   private readonly toolNameById = new Map<string, string>();
   private readonly spawnById = new Map<string, AgentSpawn>();
   private readonly notifications = new Map<string, string>();
+  /** Truncated input JSON per tool_use id, for error reports. */
+  private readonly inputById = new Map<string, string>();
+  /** File path per Edit/Write tool_use id. */
+  private readonly editPathById = new Map<string, string>();
+  /** tool_use ids still waiting for a tool_result (insertion order = call order). */
+  private readonly openTools = new Map<string, string>();
+  private readonly compactionIdx: ContextPoint[] = [];
+  private lastMs: number | undefined;
+  private fileEditCount = 0;
+  /** True between a prompt and the end of its turn (so a turn end is recorded once). */
+  private turnOpen = true;
+  private fileReadCount = 0;
+  /** Read tool_use id -> file path. */
+  private readonly readPathById = new Map<string, string>();
+  /** Bash tool_use id -> pending git commit entry. */
+  private readonly commitById = new Map<string, CommitEntry>();
   private startMs = Infinity;
   private endMs = -Infinity;
   private lineNo = 0;
@@ -195,6 +299,17 @@ export class TranscriptAccumulator {
       toolCalls: 0,
       prompts: [],
       spawns: [],
+      toolErrors: [],
+      fileEdits: dict(),
+      context: [],
+      compactions: [],
+      usageByDay: dict(),
+      pendingTools: [],
+      usageByHour: dict(),
+      resultSizes: dict(),
+      largestResults: [],
+      fileReads: dict(),
+      commits: [],
       lines: 0,
       badLines: 0,
     };
@@ -238,7 +353,11 @@ export class TranscriptAccumulator {
       if (Number.isFinite(t)) {
         if (t < this.startMs) this.startMs = t;
         if (t > this.endMs) this.endMs = t;
+        this.lastMs = t;
       }
+    }
+    if (o.isCompactSummary === true || (o.type === 'system' && o.subtype === 'compact_boundary')) {
+      this.recordCompaction(ts);
     }
     const s = this.stats;
     s.sessionId ??= str(o.sessionId);
@@ -248,7 +367,18 @@ export class TranscriptAccumulator {
     s.version = str(o.version) ?? s.version;
     s.entrypoint ??= str(o.entrypoint);
 
+    // A Stop hook summary also marks the end of a turn, but only count each turn once.
+    if (o.type === 'system' && o.subtype === 'stop_hook_summary' && ts && this.turnOpen) {
+      s.turnEndedAt = ts;
+      this.turnOpen = false;
+    }
     switch (o.type) {
+      case 'cost-state': {
+        if (typeof o.totalCostUSD === 'number' && Number.isFinite(o.totalCostUSD) && o.totalCostUSD >= 0) {
+          s.reportedCostUsd = o.totalCostUSD;
+        }
+        break;
+      }
       case 'ai-title': {
         const t = str(o.aiTitle);
         if (t) s.aiTitle = t;
@@ -275,17 +405,33 @@ export class TranscriptAccumulator {
     const msg = o.message;
     if (!isObj(msg)) return;
     const model = str(msg.model);
+    const stop = str(msg.stop_reason);
+    if (stop) {
+      this.stats.lastStopReason = stop;
+      if (stop === 'end_turn' && this.turnOpen) {
+        this.stats.turnEndedAt = str(o.timestamp) ?? this.stats.turnEndedAt;
+        this.turnOpen = false;
+      }
+      if (stop === 'end_turn') {
+        // The turn is over: any call still without a result was abandoned.
+        this.openTools.clear();
+      }
+    }
     const u = msg.usage;
     if (isObj(u)) {
+      const cw1h = isObj(u.cache_creation) ? num(u.cache_creation.ephemeral_1h_input_tokens) : 0;
       const key = str(msg.id) ?? str(o.uuid) ?? `line:${this.lineNo}`;
-      // Same message.id may be split over several lines with identical usage: keep the last.
+      // Same message.id may be split over several lines with identical usage: keep the last
+      // usage, but the first time (Map keeps the first insertion position).
       this.usageById.set(key, {
+        t: this.usageById.get(key)?.t ?? this.lastMs,
         model,
         usage: {
           input: num(u.input_tokens),
           output: num(u.output_tokens),
           cacheWrite: num(u.cache_creation_input_tokens),
           cacheRead: num(u.cache_read_input_tokens),
+          ...(cw1h ? { cacheWrite1h: Math.min(cw1h, num(u.cache_creation_input_tokens)) } : {}),
         },
       });
     }
@@ -295,11 +441,14 @@ export class TranscriptAccumulator {
       if (!isObj(item) || item.type !== 'tool_use') continue;
       const id = str(item.id);
       const name = str(item.name) ?? '(unknown)';
+      const input = isObj(item.input) ? item.input : {};
       if (id) {
         if (this.toolNameById.has(id)) continue; // duplicate block
         this.toolNameById.set(id, name);
+        this.inputById.set(id, previewJson(input, MAX_INPUT_PREVIEW_CHARS));
+        this.openTools.set(id, name);
       }
-      this.recordToolUse(name, isObj(item.input) ? item.input : {}, id, str(o.timestamp));
+      this.recordToolUse(name, input, id, str(o.timestamp));
     }
   }
 
@@ -316,6 +465,18 @@ export class TranscriptAccumulator {
     }
     const tool = (s.tools[name] ??= { name, calls: 0, errors: 0 });
     tool.calls++;
+    if (FILE_EDIT_TOOLS.has(name)) this.recordFileEdit(name, input, id, ts);
+    if (name === 'Read' && id) {
+      const file = str(input.file_path);
+      if (file) this.readPathById.set(id, file);
+    }
+    if (name === 'Bash' && id && typeof input.command === 'string' && isGitCommitCommand(input.command)) {
+      if (s.commits.length < MAX_COMMITS) {
+        const entry: CommitEntry = { timestamp: ts, command: truncate(input.command, 200), usageAtCommit: this.usageSnapshot() };
+        s.commits.push(entry);
+        this.commitById.set(id, entry);
+      }
+    }
     if (name === 'Skill') {
       const skill = str(input.skill) ?? '(unknown)';
       s.skills[skill] = (s.skills[skill] ?? 0) + 1;
@@ -334,6 +495,80 @@ export class TranscriptAccumulator {
       this.spawnById.set(id, spawn);
       s.spawns.push(spawn);
     }
+  }
+
+  private recordFileEdit(name: string, input: Json, id: string | undefined, ts: string | undefined): void {
+    const file = str(input.file_path) ?? str(input.notebook_path);
+    if (!file) return;
+    const edits = this.stats.fileEdits;
+    let stat = edits[file];
+    if (!stat) {
+      if (this.fileEditCount >= MAX_FILE_EDITS) return;
+      this.fileEditCount++;
+      stat = edits[file] = { path: file, edits: 0, writes: 0, failed: 0 };
+    }
+    if (name === 'Write') stat.writes++;
+    else stat.edits++;
+    if (ts) stat.lastTime = ts;
+    if (id) this.editPathById.set(id, file);
+  }
+
+  /** Cumulative usage per model so far (deduped messages). */
+  private usageSnapshot(): Record<string, TokenUsage> {
+    const out = dict<TokenUsage>();
+    for (const { model, usage } of this.usageById.values()) addUsage((out[model ?? '(unknown)'] ??= emptyUsage()), usage);
+    return out;
+  }
+
+  private recordResultSize(item: Json, id: string | undefined): void {
+    const name = (id && this.toolNameById.get(id)) || '(unknown)';
+    const text = toolResultText(item.content);
+    const chars = text.length;
+    const s = this.stats;
+    const size: ToolResultSize = (s.resultSizes[name] ??= { name, calls: 0, chars: 0 });
+    size.calls++;
+    size.chars += chars;
+    const list = s.largestResults;
+    if (chars > 0 && (list.length < MAX_LARGE_RESULTS || chars > list[list.length - 1].chars)) {
+      const entry: LargeResult = {
+        tool: name,
+        input: (id && this.inputById.get(id)) || '',
+        chars,
+        timestamp: this.lastMs !== undefined ? new Date(this.lastMs).toISOString() : undefined,
+      };
+      let at = list.findIndex((e) => e.chars < chars);
+      if (at < 0) at = list.length;
+      list.splice(at, 0, entry);
+      if (list.length > MAX_LARGE_RESULTS) list.pop();
+    }
+    const readPath = id ? this.readPathById.get(id) : undefined;
+    if (readPath) {
+      let r: FileReadStat | undefined = s.fileReads[readPath];
+      if (!r && this.fileReadCount < MAX_FILE_READS) {
+        this.fileReadCount++;
+        r = s.fileReads[readPath] = { path: readPath, reads: 0, chars: 0 };
+      }
+      if (r) {
+        r.reads++;
+        r.chars += chars;
+      }
+    }
+    const commit = id ? this.commitById.get(id) : undefined;
+    if (commit) {
+      const parsed = parseCommitOutput(text);
+      if (parsed) Object.assign(commit, parsed);
+      // `git commit -q` prints nothing: only an error result counts as a failure.
+      if (item.is_error === true) commit.failed = true;
+    }
+  }
+
+  private recordCompaction(ts: string | undefined): void {
+    if (this.compactionIdx.length >= MAX_COMPACTIONS) return;
+    const i = this.usageById.size;
+    const last = this.compactionIdx[this.compactionIdx.length - 1];
+    // A compact_boundary line is usually followed by the isCompactSummary user line: count once.
+    if (last && last.i === i) return;
+    this.compactionIdx.push({ i, timestamp: ts, tokens: 0 });
   }
 
   private handleUser(o: Json, ts: string | undefined): void {
@@ -356,13 +591,18 @@ export class TranscriptAccumulator {
       }
     }
     for (const t of texts) this.scanNotification(t);
+    // An interrupt or a new prompt means earlier calls without a result will never get one.
+    if (texts.some((t) => t.trimStart().startsWith('[Request interrupted'))) this.openTools.clear();
+    // Any user line other than a tool result (a prompt, a background task notification) starts a turn.
+    if (!hasToolResult && o.isSidechain !== true && texts.length) this.turnOpen = true;
     if (hasToolResult || o.isMeta === true || o.isCompactSummary === true || o.isSidechain === true && !this.stats.agentId) {
       return;
     }
     const cleaned = texts.map(cleanPromptText).filter((t): t is string => !!t);
     if (cleaned.length === 0) return;
     const text = cleaned.join(' ');
-    this.stats.firstPrompt ??= truncate(text, MAX_PROMPT_CHARS);
+    if (o.isSidechain !== true) this.openTools.clear();
+    if (!this.stats.firstPrompt) this.stats.firstPrompt = truncate(text, MAX_PROMPT_CHARS);
     if (this.stats.prompts.length < MAX_PROMPTS) {
       const entry: PromptEntry = { timestamp: ts, text: truncate(text, MAX_PROMPT_CHARS) };
       this.stats.prompts.push(entry);
@@ -372,10 +612,21 @@ export class TranscriptAccumulator {
   private handleToolResult(item: Json, toolUseResult: unknown): void {
     const id = str(item.tool_use_id);
     const isError = item.is_error === true;
+    if (id) this.openTools.delete(id);
     if (isError) {
       const name = (id && this.toolNameById.get(id)) || '(unknown)';
       const mcp = splitMcpName(name);
       const s = this.stats;
+      if (s.toolErrors.length < MAX_TOOL_ERRORS) {
+        s.toolErrors.push({
+          timestamp: this.lastMs !== undefined ? new Date(this.lastMs).toISOString() : undefined,
+          tool: name,
+          input: (id && this.inputById.get(id)) || '',
+          error: truncate(toolResultText(item.content), MAX_ERROR_CHARS),
+        });
+      }
+      const editPath = id ? this.editPathById.get(id) : undefined;
+      if (editPath && s.fileEdits[editPath]) s.fileEdits[editPath].failed++;
       if (mcp) {
         const server = (s.mcp[mcp.server] ??= { server: mcp.server, calls: 0, errors: 0, tools: dict() });
         server.errors++;
@@ -383,6 +634,14 @@ export class TranscriptAccumulator {
       } else {
         (s.tools[name] ??= { name, calls: 0, errors: 0 }).errors++;
       }
+    }
+    this.recordResultSize(item, id);
+    if (id) {
+      // Only needed until the result arrives.
+      this.inputById.delete(id);
+      this.editPathById.delete(id);
+      this.readPathById.delete(id);
+      this.commitById.delete(id);
     }
     const spawn = id ? this.spawnById.get(id) : undefined;
     if (!spawn) return;
@@ -413,16 +672,49 @@ export class TranscriptAccumulator {
     if (taskId) this.notifications.set(taskId, status);
   }
 
+  /**
+   * Compute derived totals. Idempotent: lines can still be added afterwards and `finish` called
+   * again (incremental parsing of a growing transcript). Returns the same stats object each time.
+   */
   finish(): TranscriptStats {
     const s = this.stats;
-    for (const { model, usage } of this.usageById.values()) {
+    s.usage = emptyUsage();
+    s.usageByModel = dict();
+    s.usageByDay = dict();
+    s.usageByHour = dict();
+    s.apiMessages = 0;
+    const context: ContextPoint[] = [];
+    // Messages seen before any timestamp are attributed to the transcript's first timestamp.
+    const fallbackMs = Number.isFinite(this.startMs) ? this.startMs : undefined;
+    for (const { model, usage, t: seenAt } of this.usageById.values()) {
+      const t = seenAt ?? fallbackMs;
       addUsage(s.usage, usage);
-      s.apiMessages++;
       const key = model ?? '(unknown)';
       const m = (s.usageByModel[key] ??= { ...emptyUsage(), messages: 0 });
       addUsage(m, usage);
       m.messages++;
+      if (t !== undefined) {
+        const hour = (s.usageByHour[utcHour(t)] ??= dict());
+        const hm = (hour[key] ??= { ...emptyUsage(), messages: 0 });
+        addUsage(hm, usage);
+        hm.messages++;
+        const day = (s.usageByDay[localDay(t)] ??= dict());
+        const dm = (day[key] ??= { ...emptyUsage(), messages: 0 });
+        addUsage(dm, usage);
+        dm.messages++;
+      }
+      if (key !== '<synthetic>') {
+        context.push({
+          i: s.apiMessages,
+          timestamp: t !== undefined ? new Date(t).toISOString() : undefined,
+          tokens: usage.input + usage.cacheWrite + usage.cacheRead,
+        });
+      }
+      s.apiMessages++;
     }
+    s.context = downsample(context, MAX_CONTEXT_POINTS);
+    s.compactions = [...this.compactionIdx];
+    s.pendingTools = [...this.openTools.values()].slice(-MAX_PENDING_TOOLS);
     s.models = sortedModels(s.usageByModel);
     for (const spawn of s.spawns) {
       spawn.notifiedStatus =
@@ -491,7 +783,11 @@ export async function forEachLine(
   maxLineBytes: number,
   onLine: (line: string) => void,
   onOversized: () => void,
-): Promise<void> {
+  opts: { completeLinesOnly?: boolean } = {},
+): Promise<number> {
+  /** Bytes up to and including the last '\n' handed to onLine/onOversized. */
+  let consumed = 0;
+  let pos = 0;
   let parts: Buffer[] = [];
   let len = 0;
   let dropping = false;
@@ -526,9 +822,100 @@ export async function forEachLine(
       if (nl === -1) break;
       emit();
       start = nl + 1;
+      consumed = pos + start;
     }
+    pos += chunk.length;
   }
-  if (pending) emit();
+  // A line without '\n' may still be being written (live transcript): leave it for the next read.
+  if (pending && !opts.completeLinesOnly) {
+    emit();
+    consumed = pos;
+  }
+  return consumed;
+}
+
+const HEAD_BYTES = 256;
+
+/** Deep copy of plain data, keeping prototype-less maps prototype-less. */
+function cloneData<T>(v: T): T {
+  if (Array.isArray(v)) return v.map(cloneData) as unknown as T;
+  if (typeof v !== 'object' || v === null) return v;
+  const out: Record<string, unknown> = Object.getPrototypeOf(v) === null ? Object.create(null) : {};
+  for (const k of Object.keys(v)) out[k] = cloneData((v as Record<string, unknown>)[k]);
+  return out as T;
+}
+
+/**
+ * Independent copy of incrementally parsed stats: later updates mutate the parser's own object,
+ * so each summary must hold a snapshot.
+ */
+export function snapshotStats(s: TranscriptStats): TranscriptStats {
+  return cloneData(s);
+}
+
+async function readHeadBytes(filePath: string, n: number): Promise<Buffer> {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(n);
+    const { bytesRead } = await handle.read(buf, 0, n, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Parses a transcript that keeps growing (a running session): each `update` reads only the bytes
+ * appended since the previous one. A trailing line without '\n' is left for the next read. If the
+ * file shrank or its first bytes changed (rewritten), it is parsed again from scratch.
+ */
+export class IncrementalTranscript {
+  private acc: TranscriptAccumulator;
+  private offset = 0;
+  private head: Buffer | undefined;
+  private queue: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    readonly filePath: string,
+    private readonly limits: TranscriptReadLimits = DEFAULT_LIMITS,
+  ) {
+    this.acc = new TranscriptAccumulator(filePath);
+  }
+
+  /** Bytes consumed so far (for tests). */
+  get bytesRead(): number {
+    return this.offset;
+  }
+
+  update(): Promise<TranscriptStats> {
+    // Serialise updates: two reads interleaving would feed lines twice or out of order.
+    const run = this.queue.then(() => this.doUpdate());
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async doUpdate(): Promise<TranscriptStats> {
+    const { size } = await fs.promises.stat(this.filePath);
+    if (size > this.limits.maxTranscriptBytes) return parseTranscriptFile(this.filePath, this.limits);
+    const head = await readHeadBytes(this.filePath, HEAD_BYTES);
+    const same = !this.head || head.subarray(0, this.head.length).equals(this.head.subarray(0, Math.min(this.head.length, head.length)));
+    if (size < this.offset || !same) {
+      this.acc = new TranscriptAccumulator(this.filePath);
+      this.offset = 0;
+    }
+    if (!this.head || this.head.length < HEAD_BYTES) this.head = head;
+    if (size > this.offset) {
+      const stream = fs.createReadStream(this.filePath, { start: this.offset, end: size - 1, highWaterMark: this.limits.highWaterMark });
+      try {
+        this.offset += await forEachLine(stream, this.limits.maxLineBytes, (l) => this.acc.addLine(l), () => this.acc.addOversizedLine(), {
+          completeLinesOnly: true,
+        });
+      } finally {
+        stream.destroy();
+      }
+    }
+    return this.acc.finish();
+  }
 }
 
 function formatMiB(bytes: number): string {
@@ -673,15 +1060,20 @@ export function sessionDirFor(sessionPath: string): string {
  * Parse a main session transcript plus all subagent transcripts under
  * `<project>/<sessionId>/subagents/`, linking each subagent to the tool_use that spawned it.
  */
-export async function parseSession(sessionPath: string, limits: ParseLimits = DEFAULT_LIMITS): Promise<SessionSummary> {
-  const main = await parseTranscriptFile(sessionPath, limits);
+export async function parseSession(
+  sessionPath: string,
+  limits: ParseLimits = DEFAULT_LIMITS,
+  /** How each transcript (main and subagents) is parsed; the store passes an incremental parser for live files. */
+  parseFile: (filePath: string) => Promise<TranscriptStats> = (f) => parseTranscriptFile(f, limits),
+): Promise<SessionSummary> {
+  const main = await parseFile(sessionPath);
   const scan: AgentFileScan = { files: [], skipped: 0, max: limits.maxSubagentFiles };
   await findAgentFiles(path.join(sessionDirFor(sessionPath), 'subagents'), 0, scan);
   const agentFiles = scan.files;
 
   const parsed = await mapPool(agentFiles, SUBAGENT_PARSE_CONCURRENCY, async (f) => {
     const [stats, meta] = await Promise.all([
-      parseTranscriptFile(f.jsonlPath, limits).catch(() => new TranscriptAccumulator(f.jsonlPath).finish()),
+      parseFile(f.jsonlPath).catch(() => new TranscriptAccumulator(f.jsonlPath).finish()),
       readMeta(f.metaPath, limits.maxMetaBytes),
     ]);
     return { file: f, stats, meta };
@@ -814,7 +1206,60 @@ export async function parseSession(sessionPath: string, limits: ParseLimits = DE
   const totalMcp = dict<McpServerStat>();
   const totalSkills = dict<number>();
   let totalToolCalls = 0;
+  const totalByDay = dict<Record<string, ModelUsage>>();
+  const totalFileEdits = dict<FileEditStat>();
+  const totalToolErrors: ToolErrorEntry[] = [];
+  const totalByHour = dict<Record<string, ModelUsage>>();
+  const totalResultSizes = dict<ToolResultSize>();
+  const totalFileReads = dict<FileReadStat>();
+  let totalLargestResults: LargeResult[] = [];
+  const agentLabel = new Map<string, string>();
+  for (const node of nodes.values()) {
+    if (node.transcriptPath) agentLabel.set(node.transcriptPath, `${node.agentType} · ${node.description || node.agentId}`);
+  }
   for (const st of all) {
+    for (const [day, models] of Object.entries(st.usageByDay)) {
+      const d = (totalByDay[day] ??= dict());
+      for (const [model, mu] of Object.entries(models)) {
+        const dm = (d[model] ??= { ...emptyUsage(), messages: 0 });
+        addUsage(dm, mu);
+        dm.messages += mu.messages;
+      }
+    }
+    for (const f of Object.values(st.fileEdits)) {
+      const d = (totalFileEdits[f.path] ??= { path: f.path, edits: 0, writes: 0, failed: 0 });
+      d.edits += f.edits;
+      d.writes += f.writes;
+      d.failed += f.failed;
+      if (f.lastTime && (!d.lastTime || f.lastTime > d.lastTime)) d.lastTime = f.lastTime;
+    }
+    for (const [hour, models] of Object.entries(st.usageByHour)) {
+      const d = (totalByHour[hour] ??= dict());
+      for (const [model, mu] of Object.entries(models)) {
+        const dm = (d[model] ??= { ...emptyUsage(), messages: 0 });
+        addUsage(dm, mu);
+        dm.messages += mu.messages;
+      }
+    }
+    for (const r of Object.values(st.resultSizes)) {
+      const d = (totalResultSizes[r.name] ??= { name: r.name, calls: 0, chars: 0 });
+      d.calls += r.calls;
+      d.chars += r.chars;
+    }
+    for (const r of Object.values(st.fileReads)) {
+      const d = (totalFileReads[r.path] ??= { path: r.path, reads: 0, chars: 0 });
+      d.reads += r.reads;
+      d.chars += r.chars;
+    }
+    const agent = st === main ? undefined : agentLabel.get(st.filePath);
+    totalLargestResults = totalLargestResults
+      .concat(st.largestResults.map((r) => (agent ? { ...r, agent } : r)))
+      .sort((a, b) => b.chars - a.chars)
+      .slice(0, MAX_LARGE_RESULTS);
+    for (const e of st.toolErrors) {
+      if (totalToolErrors.length >= MAX_SESSION_TOOL_ERRORS) break;
+      totalToolErrors.push(agent ? { ...e, agent } : e);
+    }
     addUsage(totalUsage, st.usage);
     for (const [model, mu] of Object.entries(st.usageByModel)) {
       const d = (totalByModel[model] ??= { ...emptyUsage(), messages: 0 });
@@ -844,6 +1289,13 @@ export async function parseSession(sessionPath: string, limits: ParseLimits = DE
     totalMcp,
     totalSkills,
     totalToolCalls,
+    totalByDay,
+    totalToolErrors: totalToolErrors.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? '')),
+    totalFileEdits,
+    totalByHour,
+    totalResultSizes,
+    totalLargestResults,
+    totalFileReads,
     models: sortedModels(totalByModel),
   };
 }
