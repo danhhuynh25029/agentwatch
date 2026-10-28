@@ -3,7 +3,7 @@
   "displayName": "Agent Session Watch",
   "description": "Browse past Claude Code sessions: cost, tokens, subagents, MCP tool calls, edited files and conversations.",
   "version": "0.3.0",
-  "publisher": "agentwatch",
+  "publisher": "HunhNgcCngDanh",
   "license": "MIT",
   "icon": "media/icon.png",
   "repository": {

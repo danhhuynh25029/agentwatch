@@ -22,7 +22,15 @@ Everything is read from local files. The extension makes no network requests and
 
 ## Installation
 
-The extension is not on the Marketplace yet. Install it from a `.vsix` file:
+Install **Agent Session Watch** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=HunhNgcCngDanh.agentwatch): search for it in the Extensions view, or run
+
+```sh
+code --install-extension HunhNgcCngDanh.agentwatch
+```
+
+Requirements: VS Code 1.85 or newer, and Claude Code having been used at least once on this machine.
+
+To build from source instead (Node.js 18+):
 
 ```sh
 git clone https://github.com/danhhuynh25029/agentwatch.git
@@ -31,8 +39,6 @@ npm install
 npx @vscode/vsce package --no-dependencies   # creates agentwatch-<version>.vsix
 code --install-extension agentwatch-*.vsix
 ```
-
-Then run **Developer: Reload Window** in VS Code. Requirements: VS Code 1.85 or newer, Node.js 18+ to build, and Claude Code having been used at least once on this machine.
 
 ## Quick start
 
