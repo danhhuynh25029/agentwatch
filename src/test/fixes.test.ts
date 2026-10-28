@@ -190,3 +190,12 @@ test('codex listing keeps the newest files first', async () => {
   const files = await listCodexSessions(root);
   assert.equal(files.length, 2);
 });
+
+test('tool summaries show the most telling field of JSON inputs', async () => {
+  const { toolSummary } = await import('../webview/views');
+  assert.equal(toolSummary('{\n  "file_path": "/a/b.ts",\n  "limit": 10\n}'), '/a/b.ts');
+  assert.equal(toolSummary('{"description":"Map totals","subagent_type":"Explore"}'), 'Map totals');
+  assert.equal(toolSummary('{"base":"USD"}'), '{"base":"USD"}');
+  assert.equal(toolSummary('npm test\nmore'), 'npm test');
+  assert.equal(toolSummary('{"file_path": "/a/b.t'), '{"file_path": "/a/b.t');
+});

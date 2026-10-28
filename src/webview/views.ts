@@ -41,6 +41,26 @@ body.replaying .replay { display: flex; }
 .convbar .spacer { flex: 1; }
 `;
 
+const SUMMARY_KEYS = ['file_path', 'notebook_path', 'pattern', 'path', 'command', 'description', 'url', 'query', 'skill', 'prompt'];
+
+/** One-line summary of a tool input: the most telling field of a JSON input, or its first line. */
+export function toolSummary(input: string): string {
+  const text = input.trim();
+  if (text.startsWith('{')) {
+    try {
+      const o = JSON.parse(text) as Record<string, unknown>;
+      for (const k of SUMMARY_KEYS) {
+        const v = o[k];
+        if (typeof v === 'string' && v.trim()) return v.replace(/\s+/g, ' ').slice(0, 160);
+      }
+      return JSON.stringify(o).slice(0, 160);
+    } catch {
+      // truncated JSON: fall through
+    }
+  }
+  return text.split('\n')[0].slice(0, 160);
+}
+
 export function renderConversation(title: string, conv: Conversation, nonce: string, cspSource: string): string {
   const tools = conv.entries.filter((e) => e.kind === 'tool').length;
   const users = conv.entries.filter((e) => e.kind === 'user').length;
@@ -80,7 +100,7 @@ export function renderConversation(title: string, conv: Conversation, nonce: str
     } else {
       const mcp = splitMcpName(e.name);
       const label = mcp ? `${mcp.server} › ${mcp.tool}` : e.name;
-      const firstLine = e.input.split('\n')[0].slice(0, 160);
+      const firstLine = toolSummary(e.input);
       const state = e.isError ? pill('error', 'err') : e.result === undefined ? pill('no result', 'muted') : '';
       body.push(
         `<details class="tool${e.isError ? ' error' : ''}"><summary><span class="name">${esc(label)}</span><span class="arg">${esc(firstLine)}</span>${state}</summary><div class="tool-body">${

@@ -10,3 +10,4 @@ package-lock.json
 **/*.ts
 *.vsix
 .github/**
+media/screenshots/**
