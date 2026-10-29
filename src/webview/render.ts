@@ -6,7 +6,7 @@ import { cacheHitRate, formatPercent, formatUsd, Pricing } from '../parser/prici
 import { SessionSummary, SubagentNode, TokenUsage, ToolStat } from '../parser/types';
 import { SessionAnnotation } from '../annotations';
 import { approxTokens, sessionInsights, toolLabel } from '../parser/insights';
-import { action, chip, esc, ganttChart, GanttRow, hero, kpis, lineChart, MAX_INDENT, n, nav, page, pill, section, shareBar, statusPill, table, time, tok } from './html';
+import { action, chip, esc, figures, ganttChart, GanttRow, hero, kpis, MAX_INDENT, n, nav, page, pill, scrubChart, section, shareBar, statusPill, table, time, tok, weighted } from './html';
 
 export { esc, renderMessage } from './html';
 
@@ -63,6 +63,8 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
   const live = opts.live ? pill(m.pendingTools.length ? `live · ${m.pendingTools[m.pendingTools.length - 1]}` : 'live', 'live') : '';
   const isCodex = /^rollout-/.test(pathLib.basename(s.filePath));
   const metaChips = [
+    chip(isCodex ? 'Codex' : 'Claude Code'),
+    ann.pinned ? chip('pinned') : '',
     m.cwd ? chip(pathLib.basename(m.cwd), { title: m.cwd }) : '',
     m.gitBranch ? chip(m.gitBranch, { mono: true }) : '',
     ...s.models.map((model) => chip(model, { tone: 'purple' })),
@@ -71,11 +73,32 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     m.version ? chip('v' + m.version, { mono: true }) : '',
     ...(ann.tags ?? []).map((t) => chip('#' + t, { tone: 'teal' })),
   ].join('');
+  const hit = cacheHitRate(s.totalUsage);
+  const errorCount = s.totalToolErrors.length;
+  const fileCount = Object.keys(s.totalFileEdits).length;
+  const keyFigures = figures(
+    {
+      label: 'Estimated cost',
+      value: esc(formatUsd(totalCost)),
+      sub: m.reportedCostUsd !== undefined ? `Claude Code recorded ${esc(formatUsd(m.reportedCostUsd))}` : 'at API list prices',
+    },
+    [
+      { label: 'Tokens', value: tok(totalTokens(s.totalUsage)), sub: `main thread ${tok(totalTokens(m.usage))}` },
+      { label: 'Cache hit', value: esc(formatPercent(hit)), sub: `${tok(s.totalUsage.cacheRead)} read from cache` },
+      { label: 'Duration', value: esc(formatDuration(s.durationMs)), sub: `${n(m.apiMessages)} API messages` },
+    ],
+    [
+      `<b>${tok(s.totalUsage.output)}</b> output`,
+      `<b>${n(s.totalToolCalls)}</b> tool calls${errorCount ? `, <span class="err">${n(errorCount)} failed</span>` : ''}`,
+      `<b>${n(s.agentCount)}</b> subagents`,
+      `<b>${n(fileCount)}</b> files changed`,
+      `<b>${n(m.commits.length)}</b> commits`,
+    ],
+  );
   const header = hero({
-    eyebrow: `${isCodex ? 'Codex session' : 'Claude Code session'} ${ann.pinned ? '· pinned' : ''}`,
     title: s.title,
     meta: metaChips,
-    extra: (live ? `<div class="chips">${live}</div>` : '') + (ann.note ? `<div class="note">${esc(ann.note)}</div>` : ''),
+    extra: (live ? `<div class="chips">${live}</div>` : '') + (ann.note ? `<div class="note">${esc(ann.note)}</div>` : '') + keyFigures,
     actions: [
       action('conversation', 'Conversation', { variant: 'primary' }),
       action('resume', 'Resume', {}),
@@ -107,38 +130,47 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     { collapsible: true, open: false },
   );
 
-  const hit = cacheHitRate(s.totalUsage);
-  const errorCount = s.totalToolErrors.length;
-  const overviewKpis = kpis([
-    {
-      label: 'Cost (est.)',
-      value: esc(formatUsd(totalCost)),
-      sub: m.reportedCostUsd !== undefined ? `Claude Code: ${esc(formatUsd(m.reportedCostUsd))}` : 'API list prices',
-      tone: 'green',
-    },
-    { label: 'Tokens', value: tok(totalTokens(s.totalUsage)), sub: `main ${tok(totalTokens(m.usage))}`, tone: 'blue' },
-    { label: 'Cache hit', value: esc(formatPercent(hit)), sub: `${tok(s.totalUsage.cacheRead)} read from cache`, tone: hit !== undefined && hit < 0.7 ? 'orange' : 'teal' },
-    { label: 'Output', value: tok(s.totalUsage.output), sub: `${n(m.apiMessages)} API messages`, tone: 'purple' },
-    { label: 'Tool calls', value: n(s.totalToolCalls), sub: errorCount ? `<span class="err">${n(errorCount)} failed</span>` : 'no errors', tone: errorCount ? 'red' : 'blue' },
-    { label: 'Subagents', value: n(s.agentCount), sub: `${n(Object.keys(s.totalFileEdits).length)} files changed`, tone: 'orange' },
-  ]);
+  // Cost drivers: the main thread and every subagent with a transcript, ranked by its own cost.
+  const mainCost = pricing.costByModel(m.usageByModel);
+  const drivers = [
+    { name: 'Main thread', detail: '', models: m.models, tokens: totalTokens(m.usage), cost: mainCost, depth: 1 },
+    ...flattenAgents(s.subagents)
+      .filter((a) => a.transcriptPath)
+      .map((a) => ({ name: a.agentType, detail: a.description, models: a.stats.models, tokens: totalTokens(a.stats.usage), cost: pricing.costByModel(a.stats.usageByModel), depth: a.depth })),
+  ].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+  const DRIVER_ROWS = 8;
+  const driverRows = drivers.slice(0, DRIVER_ROWS).map(
+    (d) =>
+      `<tr><td><span class="cell-strong">${esc(d.name)}</span>${d.detail ? `<div class="muted small">${esc(d.detail)}</div>` : ''}</td><td class="muted">${esc(d.models.join(', ') || '-')}</td><td class="num">${tok(
+        d.tokens,
+      )}</td><td class="num">${weighted(esc(formatUsd(d.cost)), totalCost ? d.cost / totalCost : 0)}</td><td>${shareBar(totalCost ? d.cost / totalCost : 0)}</td></tr>`,
+  );
+  const driversTable = `${table(['Thread', 'Model', 'Tokens', 'Cost', 'Share'], driverRows, 2)}${
+    drivers.length > DRIVER_ROWS ? `<p class="explain">${n(drivers.length - DRIVER_ROWS)} more in <a class="btn-link" href="#agents">Subagents</a>.</p>` : ''
+  }`;
 
   const tokensBody = `${usageCards('Session incl. subagents', s.totalUsage, totalCost)}
     ${usageCards('Main thread only', m.usage, pricing.costByModel(m.usageByModel))}
-    <p class="muted small">Estimated from public API list prices; cache writes are priced by their 5-minute or 1-hour TTL.${
+    <p class="explain">Estimated from public API list prices; cache writes are priced by their 5-minute or 1-hour TTL.${
       m.reportedCostUsd !== undefined ? ` Claude Code recorded ${esc(formatUsd(m.reportedCostUsd))} itself (may cover only the latest run after a resume).` : ''
     } Override prices with <code>agentwatch.pricing</code>.${unpriced.length ? ` No price for: ${esc(unpriced.join(', '))} (counted as $0).` : ''}</p>`;
 
   const peak = m.context.reduce((mx, p) => Math.max(mx, p.tokens), 0);
+  const peakIndex = m.context.findIndex((p) => p.tokens === peak);
   const contextChartHtml = `
-    <div class="legend"><span>Peak <b>${tok(peak)}</b></span><span>${n(m.apiMessages)} API messages</span>${
-      m.compactions.length ? `<span><span class="swatch-marker">┆</span> ${n(m.compactions.length)} compaction(s)</span>` : ''
-    }</div>
-    ${lineChart(
-      m.context.map((p) => ({ x: p.i, y: p.tokens, title: `#${p.i + 1} · ${formatTokens(p.tokens)} tokens${p.timestamp ? ' · ' + new Date(p.timestamp).toLocaleTimeString() : ''}` })),
+    ${scrubChart(
+      m.context.map((p) => ({
+        x: p.i,
+        y: p.tokens,
+        title: `#${p.i + 1} · ${formatTokens(p.tokens)} tokens${p.timestamp ? ' · ' + new Date(p.timestamp).toLocaleTimeString() : ''}`,
+        value: formatTokens(p.tokens),
+        meta: `${p.tokens === peak ? 'peak · ' : ''}message ${(p.i + 1).toLocaleString('en-US')} of ${m.apiMessages.toLocaleString('en-US')}${p.timestamp ? ' · ' + new Date(p.timestamp).toLocaleTimeString() : ''}`,
+      })),
       m.compactions.map((c) => ({ x: c.i, y: 0, title: `Compaction${c.timestamp ? ' at ' + new Date(c.timestamp).toLocaleString() : ''}` })),
+      formatTokens,
+      peakIndex,
     )}
-    <div class="axis-note"><span>${time(m.startTime)}</span><span>${time(m.endTime)}</span></div>`;
+    <div class="axis-note"><span>${time(m.startTime)}</span><span>${m.compactions.length ? `${n(m.compactions.length)} compaction(s), dashed` : 'drag to scrub'}</span><span>${time(m.endTime)}</span></div>`;
 
   const insightItems = sessionInsights(s, pricing);
   const insights = insightItems.length
@@ -170,7 +202,7 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     'Context',
     `${contextChartHtml}
     <h3>What fills the context</h3>
-    <p class="muted small">Tool results by size (about 4 characters per token). They stay in the context until a compaction.</p>
+    <p class="explain">Tool results by size (about 4 characters per token). They stay in the context until a compaction.</p>
     ${table(['Tool', 'Results', 'Total', 'Average', 'Share'], sizeRows)}
     ${bigRows.length ? `<h3>Largest results</h3>${table(['Time', 'Tool', 'Input', 'Size'], bigRows, 3)}` : ''}
     ${readRows.length ? `<h3>Files read more than once</h3>${table(['File', 'Reads', 'Total'], readRows)}` : ''}`,
@@ -204,10 +236,10 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
         : c.message
           ? esc(c.message)
           : `<span class="muted">(no commit output) ${esc(c.command)}</span>`
-    }</td><td class="num">${esc(formatUsd(delta))}</td></tr>`;
+    }</td><td class="num">${weighted(esc(formatUsd(delta)), totalCost ? delta / totalCost : 0)}</td></tr>`;
   });
   const commits = commitRows.length
-    ? section('commits', 'Commits', `${table(['Time', 'Hash', 'Branch', 'Message', 'Cost since previous'], commitRows, 4)}<p class="muted small">Cost since previous counts the main thread only.</p>`, {
+    ? section('commits', 'Commits', `${table(['Time', 'Hash', 'Branch', 'Message', 'Cost since previous'], commitRows, 4)}<p class="explain">Cost since previous counts the main thread only.</p>`, {
         count: commitRows.length,
       })
     : '';
@@ -217,7 +249,7 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     .sort((a, b) => totalTokens(b[1]) - totalTokens(a[1]))
     .map(
       ([model, u]) =>
-        `<tr><td>${chip(model, { tone: 'purple' })}</td><td class="num">${n(u.messages)}</td><td class="num">${tok(u.input)}</td><td class="num">${tok(u.output)}</td><td class="num">${tok(u.cacheWrite)}</td><td class="num">${tok(u.cacheRead)}</td><td class="num">${tok(totalTokens(u))}</td><td class="num">${esc(formatPercent(cacheHitRate(u)))}</td><td class="num">${esc(formatUsd(pricing.cost(model, u)))}</td></tr>`,
+        `<tr><td>${chip(model, { tone: 'purple' })}</td><td class="num">${n(u.messages)}</td><td class="num">${tok(u.input)}</td><td class="num">${tok(u.output)}</td><td class="num">${tok(u.cacheWrite)}</td><td class="num">${tok(u.cacheRead)}</td><td class="num">${tok(totalTokens(u))}</td><td class="num">${esc(formatPercent(cacheHitRate(u)))}</td><td class="num">${weighted(esc(formatUsd(pricing.cost(model, u))), totalCost ? pricing.cost(model, u) / totalCost : 0)}</td></tr>`,
     );
   const models = `<h3>Per model (incl. subagents)</h3>${table(
     ['Model', 'API msgs', 'Input', 'Output', 'Cache write', 'Cache read', 'Total', 'Cache hit', 'Cost'],
@@ -233,7 +265,8 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     const own = a.transcriptPath ? tok(totalTokens(a.stats.usage)) : a.reportedTokens !== undefined ? `~${tok(a.reportedTokens)}` : '-';
     const nested = a.children.length ? tok(totalTokens(a.totalUsage)) : '';
     const calls = a.transcriptPath ? n(a.stats.toolCalls) : a.spawn?.result?.totalToolUseCount !== undefined ? n(a.spawn.result.totalToolUseCount) : '-';
-    const cost = a.transcriptPath ? esc(formatUsd(pricing.costByModel(a.stats.usageByModel))) : '-';
+    const ownCost = pricing.costByModel(a.stats.usageByModel);
+    const cost = a.transcriptPath ? weighted(esc(formatUsd(ownCost)), totalCost ? ownCost / totalCost : 0) : '-';
     // Inline style attributes are blocked by the CSP, so indentation uses classes.
     const depthClass = 'd' + Math.min(a.depth, MAX_INDENT);
     return `<tr>
@@ -311,8 +344,8 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     collapsible: true,
   });
   const toolsSection = section('tools', 'Tools', `<div class="grid-2">${tools}${mcp}</div>${skills}`, { count: s.totalToolCalls, collapsible: true });
-  const overview = section('overview', 'Overview', `${overviewKpis}${insights}`, {});
-  const navLinks: Array<[string, string]> = [['overview', 'Overview'], ['tokens', 'Tokens'], ['context', 'Context']];
+  const overview = section('overview', 'Cost drivers', `${driversTable}${insights}`, {});
+  const navLinks: Array<[string, string]> = [['overview', 'Cost drivers'], ['context', 'Context'], ['tokens', 'Tokens']];
   if (agents) navLinks.push(['agents', 'Subagents']);
   if (commits) navLinks.push(['commits', 'Commits']);
   if (filesSection) navLinks.push(['files', 'Files']);
@@ -321,7 +354,7 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
 
   const html = page(
     s.title,
-    [header, nav(navLinks), overview, section('tokens', 'Tokens and cost', tokensBody + models, { collapsible: true }), contextSection, agents, commits, filesSection, errors, toolsSection, prompts, details].join('\n'),
+    [header, nav(navLinks), overview, contextSection, section('tokens', 'Tokens and cost', tokensBody + models, { collapsible: true }), agents, commits, filesSection, errors, toolsSection, prompts, details].join('\n'),
     nonce,
     cspSource,
   );

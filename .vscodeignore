@@ -12,3 +12,7 @@ package-lock.json
 .github/**
 media/screenshots/**
 media/demo.gif
+.impeccable/**
+PRODUCT.md
+DESIGN.md
+DESIGN.json

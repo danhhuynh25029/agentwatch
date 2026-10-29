@@ -2,3 +2,6 @@ node_modules
 out
 *.vsix
 .DS_Store
+.impeccable/hook.cache.json
+.impeccable/questions/
+.impeccable/mocks/

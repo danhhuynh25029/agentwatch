@@ -7,20 +7,21 @@ import { ConfiguredServer } from '../parser/mcpConfig';
 import { splitMcpName } from '../parser/parser';
 import { cacheHitRate, formatPercent, formatUsd } from '../parser/pricing';
 import { SessionSummary } from '../parser/types';
-import { action, barChart, chip, esc, hero, kpis, n, nav, page, pill, section, shareBar, table, time, tok } from './html';
+import { action, barChart, chip, esc, figures, hero, kpis, n, nav, page, pill, section, shareBar, table, time, tok, weighted } from './html';
 
 const CONVERSATION_STYLE = `
 .thread { display: flex; flex-direction: column; gap: 14px; }
 .step { display: flex; flex-direction: column; }
 .msg { display: flex; gap: 12px; max-width: 86%; }
-.msg .avatar { flex: none; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 600; letter-spacing: 0.03em; color: var(--muted); border: 1px solid var(--line-strong); }
+.msg .avatar { flex: none; width: 28px; padding-top: 11px; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .msg.user { align-self: flex-end; flex-direction: row-reverse; }
-.bubble { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); min-width: 0; }
+.bubble { padding: 10px 14px; border-radius: var(--radius); min-width: 0; }
+.msg.assistant .bubble { padding-left: 0; }
 .msg.user .bubble { background: var(--surface); }
-.bubble .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 8px; }
+.bubble .who { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 8px; }
 .bubble .who b { color: var(--fg); font-weight: 500; }
 .bubble .body { white-space: pre-wrap; word-break: break-word; }
-details.tool { margin: 0 0 0 38px; max-width: calc(86% - 38px); border-left: 1px solid var(--line-strong); }
+details.tool { margin: 0 0 0 40px; max-width: calc(86% - 40px); border-left: 1px solid var(--line); }
 details.tool > summary { cursor: pointer; padding: 3px 12px; display: flex; gap: 10px; align-items: center; list-style: none; font-size: 12px; color: var(--muted); }
 details.tool > summary:hover { color: var(--fg); }
 details.tool > summary::-webkit-details-marker { display: none; }
@@ -32,8 +33,8 @@ details.tool.error { border-left-color: var(--red); }
 .compact::before, .compact::after { content: ''; flex: 1; height: 1px; background: var(--line-strong); }
 body.hide-tools details.tool { display: none; }
 body.replaying .step:not(.shown) { display: none; }
-body.replaying .step.current .bubble { border-color: var(--fg); }
-body.replaying .step.current details.tool { border-left-color: var(--fg); }
+body.replaying .step.current .bubble { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+body.replaying .step.current details.tool { border-left-color: var(--accent); }
 .replay { display: none; gap: 2px; align-items: center; }
 body.replaying .replay { display: flex; }
 .convbar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 0; margin-bottom: 18px; border-bottom: 1px solid var(--line); background: var(--bg); }
@@ -67,7 +68,6 @@ export function renderConversation(title: string, conv: Conversation, nonce: str
   const body: string[] = [];
   body.push(
     hero({
-      eyebrow: 'Conversation',
       title,
       meta: [chip(`${users} prompts`, {}), chip(`${conv.entries.length - users - tools} replies`, {}), chip(`${tools} tool calls`, {})].join(''),
     }),
@@ -167,7 +167,7 @@ function renderBlocks(blocks: UsageBlock[], limit: number | undefined): string {
       ),
     ),
   );
-  out.push('<p class="muted small">A block starts at the hour of the first message after the previous block ended, like subscription usage windows. Approximate.</p>');
+  out.push('<p class="explain">A block starts at the hour of the first message after the previous block ended, like subscription usage windows. Approximate.</p>');
   return out.join('\n');
 }
 
@@ -177,7 +177,6 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
   const out: string[] = [];
   out.push(
     hero({
-      eyebrow: 'AgentWatch',
       title: 'Usage dashboard',
       meta: [chip(scopeLabel, {}), chip(range, {})].join(''),
       actions: [action('range', 'Change range', { variant: 'primary' }), action('refresh', 'Refresh', { variant: 'ghost' })].join(''),
@@ -194,12 +193,11 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
     section(
       'summary',
       'Summary',
-      kpis([
-        { label: 'Cost (est.)', value: esc(formatUsd(d.cost)), sub: `${esc(formatUsd(avg))} per session`, tone: 'green' },
-        { label: 'Sessions', value: n(d.sessions), sub: `${n(d.projects.length)} projects`, tone: 'blue' },
-        { label: 'Tokens', value: tok(totalTokens(d.usage)), sub: `${tok(d.usage.output)} output`, tone: 'purple' },
-        { label: 'Cache hit', value: esc(formatPercent(d.cacheHit)), sub: `${tok(d.usage.cacheRead)} from cache`, tone: 'teal' },
-      ]) + (d.unpricedModels.length ? `<p class="muted small">No price for: ${esc(d.unpricedModels.join(', '))} (counted as $0).</p>` : ''),
+      figures({ label: 'Estimated cost', value: esc(formatUsd(d.cost)), sub: `${esc(formatUsd(avg))} per session · ${esc(range)}` }, [
+        { label: 'Sessions', value: n(d.sessions), sub: `${n(d.projects.length)} projects` },
+        { label: 'Tokens', value: tok(totalTokens(d.usage)), sub: `${tok(d.usage.output)} output` },
+        { label: 'Cache hit', value: esc(formatPercent(d.cacheHit)), sub: `${tok(d.usage.cacheRead)} from cache` },
+      ]) + (d.unpricedModels.length ? `<p class="explain">No price for: ${esc(d.unpricedModels.join(', '))} (counted as $0).</p>` : ''),
       {},
     ),
   );
@@ -235,15 +233,13 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
           (p) =>
             `<tr><td class="cell-strong">${esc(p.project)}</td><td class="num">${n(p.sessions)}</td><td class="num" title="cache hit ${esc(formatPercent(cacheHitRate(p.usage)))}">${tok(
               totalTokens(p.usage),
-            )}</td><td class="num">${esc(formatUsd(p.cost))}</td><td>${shareBar(p.cost / maxProject, 'green')}</td></tr>`,
+            )}</td><td class="num">${weighted(esc(formatUsd(p.cost)), d.cost ? p.cost / d.cost : 0)}</td><td>${shareBar(p.cost / maxProject, 'green')}</td></tr>`,
         ),
       )}</div><div><h3>Models</h3>${table(
         ['Model', 'Output', 'Cache read', 'Cost', ''],
         d.models.map(
           (m) =>
-            `<tr><td>${chip(m.model, { tone: 'purple' })}</td><td class="num">${tok(m.usage.output)}</td><td class="num">${tok(m.usage.cacheRead)}</td><td class="num">${esc(
-              formatUsd(m.cost),
-            )}</td><td>${shareBar(m.cost / maxModel, 'purple')}</td></tr>`,
+            `<tr><td>${chip(m.model, { tone: 'purple' })}</td><td class="num">${tok(m.usage.output)}</td><td class="num">${tok(m.usage.cacheRead)}</td><td class="num">${weighted(esc(formatUsd(m.cost)), d.cost ? m.cost / d.cost : 0)}</td><td>${shareBar(m.cost / maxModel, 'purple')}</td></tr>`,
         ),
       )}</div></div>`,
       {},
@@ -260,7 +256,7 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
           sessions.push(s.filePath);
           return `<tr><td>${action('openSession', s.title, { index: sessions.length - 1, link: true })}</td><td>${chip(s.project, {})}</td><td class="ts">${time(
             s.endTime,
-          )}</td><td class="num">${tok(totalTokens(s.usage))}</td><td class="num cell-strong">${esc(formatUsd(s.cost))}</td></tr>`;
+          )}</td><td class="num">${tok(totalTokens(s.usage))}</td><td class="num">${weighted(esc(formatUsd(s.cost)), d.cost ? s.cost / d.cost : 0)}</td></tr>`;
         }),
       ),
       { count: d.topSessions.length },
@@ -284,7 +280,7 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
             `<tr><td>${chip(t.server, { tone: 'teal' })}</td><td>${esc(t.tool)}</td><td class="num">${n(t.calls)}</td><td class="num">${t.errors ? pill(String(t.errors), 'err') : '0'}</td></tr>`,
         ),
         2,
-      )}<p class="muted small">Tokens and cost are split by day; tool and subagent counts include whole sessions that had usage in the range.</p>`,
+      )}<p class="explain">Tokens and cost are split by day; tool and subagent counts include whole sessions that had usage in the range.</p>`,
       { collapsible: true },
     ),
   );
@@ -300,7 +296,7 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
               extras.unusedMcp.map((c) => `<tr><td>${chip(c.name, { tone: 'orange' })}</td><td>${pill(c.scope, 'muted')}</td><td class="muted">${esc(c.project ?? '')}</td></tr>`),
               99,
             ) +
-              '<p class="muted small">Every connected MCP server adds its tool definitions to the context of each session. Disable servers you do not use (<code>claude mcp remove</code> or <code>/mcp</code>).</p>'
+              '<p class="explain">Every connected MCP server adds its tool definitions to the context of each session. Disable servers you do not use (<code>claude mcp remove</code> or <code>/mcp</code>).</p>'
           : '<div class="empty">All configured servers were used.</div>',
         { count: extras.unusedMcp?.length ?? 0 },
       ),
@@ -326,11 +322,11 @@ function fmt(v: number | undefined, f: CompareMetric['format']): string {
 }
 
 const COMPARE_STYLE = `
-.vs { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; margin-bottom: 8px; }
-.vs .side { padding: 16px 18px; background: var(--bg); min-width: 0; }
-.vs .badge { display: inline-flex; width: 20px; height: 20px; border-radius: 4px; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; border: 1px solid var(--line-strong); color: var(--muted); margin-right: 10px; }
+.vs { display: grid; grid-template-columns: 1fr 1fr; gap: 24px 40px; margin: 20px 0 8px; }
+.vs .side { min-width: 0; }
+.vs .side .fig-value { font-size: 52px; font-weight: 600; letter-spacing: -0.045em; line-height: 1; margin: 8px 0 12px; }
 .vs .mid { display: none; }
-.vs .t { font-weight: 500; font-size: 14px; display: flex; align-items: center; }
+.vs .t { font-weight: 600; font-size: 16px; letter-spacing: -0.01em; display: flex; align-items: center; }
 .vs .chips { margin-top: 10px; }
 @media (max-width: 640px) { .vs { grid-template-columns: 1fr; } }
 `;
@@ -349,15 +345,16 @@ export function renderCompare(a: SessionSummary, b: SessionSummary, metrics: Com
     }
     return `<tr><td class="cell-strong">${esc(m.label)}</td><td class="num">${esc(fmt(m.a, m.format))}</td><td class="num">${esc(fmt(m.b, m.format))}</td><td class="num">${delta}</td></tr>`;
   });
+  const costMetric = metrics.find((m) => m.format === 'usd');
   const side = (cls: 'a' | 'b', s: SessionSummary, i: number) =>
-    `<div class="side ${cls}"><div class="t"><span class="badge">${cls.toUpperCase()}</span>${action('openSession', s.title, { index: i, link: true })}</div><div class="chips">${[
+    `<div class="side ${cls}"><div class="fig-label">Session ${cls.toUpperCase()}</div><div class="fig-value">${esc(fmt(costMetric?.[cls], 'usd'))}</div><div class="t">${action('openSession', s.title, { index: i, link: true })}</div><div class="chips">${[
       s.main.cwd ? chip(s.main.cwd.split(/[\\/]/).pop() ?? s.main.cwd, { title: s.main.cwd }) : '',
       s.main.gitBranch ? chip(s.main.gitBranch, { mono: true }) : '',
       ...s.models.map((m) => chip(m, { tone: 'purple' })),
       s.main.startTime ? chip(new Date(s.main.startTime).toLocaleString(), {}) : '',
     ].join('')}</div></div>`;
-  const body = `${hero({ eyebrow: 'AgentWatch', title: 'Compare sessions' })}
+  const body = `${hero({ title: 'Compare sessions' })}
 <div class="vs">${side('a', a, 0)}<div class="mid">VS</div>${side('b', b, 1)}</div>
-${section('metrics', 'Metrics', `${table(['Metric', 'A', 'B', 'B − A'], rows)}<p class="muted small">Green means B is better (lower cost, tokens or errors; higher cache hit). Costs are estimates.</p>`, {})}`;
+${section('metrics', 'Metrics', `${table(['Metric', 'A', 'B', 'B − A'], rows)}<p class="explain">Green means B is better (lower cost, tokens or errors; higher cache hit). Costs are estimates.</p>`, {})}`;
   return page('Compare sessions', body, nonce, cspSource, COMPARE_STYLE);
 }
