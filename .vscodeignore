@@ -11,3 +11,4 @@ package-lock.json
 *.vsix
 .github/**
 media/screenshots/**
+media/demo.gif

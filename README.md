@@ -4,9 +4,13 @@ A VS Code extension for looking back at your Claude Code sessions. It reads the 
 
 Everything is read from local files. The extension makes no network requests and sends nothing anywhere.
 
-![Session panel: cost, tokens, cache hit rate and context size of one session](media/screenshots/session.png)
+![Quick tour: session panel, conversation viewer, usage dashboard and session comparison](media/demo.gif)
 
 ## Screenshots
+
+**Session panel**: cost, tokens, cache hit rate and context size of one session.
+
+![Session panel](media/screenshots/session.png)
 
 **Usage dashboard**: cost per day, project and model, 5-hour usage blocks, most expensive sessions, and MCP servers you configured but never used.
 
@@ -150,4 +154,4 @@ node out/scripts/scan.js -n 10 path/to/session.jsonl
 
 Press **F5** in VS Code ("Run Extension") to start an Extension Development Host. The default build task runs `npm run watch`.
 
-The screenshots in `media/screenshots/` were rendered from fictional demo transcripts, not real sessions.
+The screenshots in `media/screenshots/` and the tour in `media/demo.gif` were rendered from fictional demo transcripts, not real sessions.
