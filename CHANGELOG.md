@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Security: detecting `git commit` in very long crafted Bash commands no longer takes quadratic time (it could freeze the extension host).
+- Security: "Resume" refuses session ids that start with `-` or `.`; "Run in a new Claude session" strips control characters and, outside bash/zsh/sh, copies the prompt to the clipboard instead of quoting it.
+
 ## 0.3.0
 
 - Notifications when a running session finishes or waits on a tool.
