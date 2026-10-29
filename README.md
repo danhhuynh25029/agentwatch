@@ -82,7 +82,7 @@ All commands are also in the command palette under **AgentWatch**.
 
 ### Also
 
-- **Resume** a session in a terminal (`claude --resume <id>`) and **export** it as Markdown.
+- **Resume** a session in the Claude Code extension when it is installed and the session belongs to the open workspace, otherwise in a terminal (`claude --resume <id>`). **Export** a session as Markdown.
 - **OpenAI Codex CLI** (basic): sessions from `~/.codex/sessions` appear under "Codex" with tokens, model, tools, errors, files changed, prompts, conversation and context size.
 
 ## Cost estimates
@@ -111,7 +111,8 @@ These are estimates. They do not reflect subscription plans (Pro/Max), Bedrock o
 | `agentwatch.dashboard.days` | `30` | Default dashboard range in days (0 = all time) |
 | `agentwatch.codeLens.enabled` | `true` | "Edited in N Claude sessions" CodeLens |
 | `agentwatch.prompts.sessionLimit` | `300` | Sessions scanned by prompt search and commit lookup |
-| `agentwatch.claudeCommand` | `claude` | Command used to resume a session |
+| `agentwatch.resumeIn` | `auto` | Where Resume opens a session: `auto`, `extension` (Claude Code extension) or `terminal` |
+| `agentwatch.claudeCommand` | `claude` | Command used to resume a session in a terminal |
 | `agentwatch.claudeConfigPath` | `~/.claude.json` | Where configured MCP server names are read (names only) |
 | `agentwatch.codex.enabled` | `true` | Show Codex CLI sessions |
 | `agentwatch.codex.sessionsDir` | `~/.codex/sessions` | Codex rollout directory |

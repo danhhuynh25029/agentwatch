@@ -20,6 +20,7 @@ import { mapPool } from './parser/parser';
 import { Pricing } from './parser/pricing';
 import { expandHome, matchesWorkspace, ProjectInfo, resolveTranscriptUnderRoot, SessionFileInfo, SessionStore } from './parser/store';
 import { SessionSummary, ToolErrorEntry } from './parser/types';
+import { CLAUDE_EXTENSION_ID, CLAUDE_OPEN_SESSION_COMMAND, claudeOpenSessionUri, resumeTarget } from './resume';
 import { SessionTreeProvider, TreeNode } from './sessionTree';
 import { isPosixShell, isSafeSessionId, shellQuote, stripControlChars } from './shell';
 import { TokenStatusBar } from './statusBar';
@@ -344,6 +345,13 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage(`AgentWatch: unexpected session id "${sessionId}", not resuming.`);
         return;
       }
+      const target = resumeTarget({
+        mode: config().get<string>('resumeIn', 'auto'),
+        codex,
+        extensionAvailable: vscode.extensions.getExtension(CLAUDE_EXTENSION_ID) !== undefined,
+        inWorkspace: matchesCurrentWorkspace(path.basename(path.dirname(filePath)), summary?.main.cwd),
+      });
+      if (target === 'extension' && (await openInClaudeExtension(sessionId))) return;
       let cwd = summary?.main.cwd;
       if (cwd && !(await isDirectory(cwd))) {
         void vscode.window.showWarningMessage(`AgentWatch: ${cwd} no longer exists; the terminal opens in your home folder.`);
@@ -767,6 +775,23 @@ function fenced(text: string, lang = ''): string {
   for (const m of text.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
   const f = '`'.repeat(longest + 1);
   return `${f}${lang}\n${text}\n${f}`;
+}
+
+/** Opens a session in the Claude Code extension; false if it could not be opened there. */
+async function openInClaudeExtension(sessionId: string): Promise<boolean> {
+  const ext = vscode.extensions.getExtension(CLAUDE_EXTENSION_ID);
+  if (!ext) return false;
+  try {
+    await ext.activate();
+    if ((await vscode.commands.getCommands(true)).includes(CLAUDE_OPEN_SESSION_COMMAND)) {
+      await vscode.commands.executeCommand(CLAUDE_OPEN_SESSION_COMMAND, sessionId);
+      return true;
+    }
+    // Fall back to the extension's URI handler (same action, public entry point).
+    return await vscode.env.openExternal(vscode.Uri.parse(claudeOpenSessionUri(vscode.env.uriScheme, sessionId)));
+  } catch {
+    return false;
+  }
 }
 
 async function isDirectory(p: string): Promise<boolean> {

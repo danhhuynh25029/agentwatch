@@ -2,7 +2,7 @@
   "name": "agentwatch",
   "displayName": "Agent Session Watch",
   "description": "Browse past Claude Code sessions: cost, tokens, subagents, MCP tool calls, edited files and conversations.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "HunhNgcCngDanh",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -137,7 +137,7 @@
       },
       {
         "command": "agentwatch.resumeSession",
-        "title": "Resume Session in Terminal",
+        "title": "Resume Session",
         "category": "AgentWatch",
         "icon": "$(debug-continue)"
       },
@@ -450,7 +450,18 @@
           "type": "string",
           "default": "claude",
           "scope": "machine",
-          "description": "Command used by \"Resume Session in Terminal\" (runs `<command> --resume <sessionId>`)."
+          "description": "Command used when \"Resume Session\" opens a terminal (runs `<command> --resume <sessionId>`)."
+        },
+        "agentwatch.resumeIn": {
+          "type": "string",
+          "enum": ["auto", "extension", "terminal"],
+          "enumDescriptions": [
+            "Claude Code extension for sessions of the open workspace when it is installed, otherwise a terminal",
+            "Always the Claude Code extension when it is installed",
+            "Always a terminal (claude --resume)"
+          ],
+          "default": "auto",
+          "description": "Where \"Resume Session\" opens a Claude session. Codex sessions always open in a terminal."
         },
         "agentwatch.notify.onFinish": {
           "type": "boolean",

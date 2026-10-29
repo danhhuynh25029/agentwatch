@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- "Resume Session" opens the session in the Claude Code extension when it is installed and the session belongs to the open workspace; otherwise it uses a terminal as before. New setting `agentwatch.resumeIn` (`auto`, `extension`, `terminal`).
+
 ## 0.3.1
 
 - Security: detecting `git commit` in very long crafted Bash commands no longer takes quadratic time (it could freeze the extension host).

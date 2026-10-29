@@ -13,6 +13,7 @@ import {
   stripNoiseTags,
 } from '../parser/parser';
 import { resolveTranscriptUnderRoot } from '../parser/store';
+import { claudeOpenSessionUri, resumeTarget } from '../resume';
 import { isPosixShell, isSafeSessionId, shellQuote, stripControlChars } from '../shell';
 import { SubagentNode } from '../parser/types';
 import { flattenAgents } from '../webview/render';
@@ -304,4 +305,19 @@ test('terminal helpers reject option-like ids and control characters', () => {
   assert.equal(shellQuote("it's"), `'it'\\''s'`);
   assert.ok(isPosixShell('/bin/zsh') && isPosixShell('/usr/bin/bash'));
   assert.ok(!isPosixShell('/opt/homebrew/bin/fish') && !isPosixShell(undefined));
+});
+
+test('resume target prefers the Claude extension only when it can open the session', () => {
+  const base = { mode: 'auto', codex: false, extensionAvailable: true, inWorkspace: true };
+  assert.equal(resumeTarget(base), 'extension');
+  assert.equal(resumeTarget({ ...base, inWorkspace: false }), 'terminal');
+  assert.equal(resumeTarget({ ...base, inWorkspace: false, mode: 'extension' }), 'extension');
+  assert.equal(resumeTarget({ ...base, mode: 'terminal' }), 'terminal');
+  assert.equal(resumeTarget({ ...base, extensionAvailable: false, mode: 'extension' }), 'terminal');
+  assert.equal(resumeTarget({ ...base, codex: true }), 'terminal');
+  assert.equal(resumeTarget({ ...base, mode: undefined }), 'extension');
+  assert.equal(
+    claudeOpenSessionUri('cursor', '2f9c1e6a-1b2c-4d5e-8f90-123456789abc'),
+    'cursor://anthropic.claude-code/open?session=2f9c1e6a-1b2c-4d5e-8f90-123456789abc',
+  );
 });
