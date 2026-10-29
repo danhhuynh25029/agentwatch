@@ -21,6 +21,7 @@ import { Pricing } from './parser/pricing';
 import { expandHome, matchesWorkspace, ProjectInfo, resolveTranscriptUnderRoot, SessionFileInfo, SessionStore } from './parser/store';
 import { SessionSummary, ToolErrorEntry } from './parser/types';
 import { SessionTreeProvider, TreeNode } from './sessionTree';
+import { isPosixShell, isSafeSessionId, shellQuote, stripControlChars } from './shell';
 import { TokenStatusBar } from './statusBar';
 import { KeyedPanels, SessionPanelManager } from './webview/panel';
 import { flattenAgents } from './webview/render';
@@ -32,7 +33,6 @@ const WATCH_DEBOUNCE_MS = 3000;
 const LIVE_STATUS_DEBOUNCE_MS = 1500;
 const LIVE_WINDOW_MS = 2 * 60 * 1000;
 const QUICK_PICK_LIMIT = 500;
-const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
 function config(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('agentwatch');
@@ -87,11 +87,6 @@ async function allSessions(tree: SessionTreeProvider): Promise<SessionFileInfo[]
 
 async function readConversationAny(filePath: string): Promise<Conversation> {
   return isCodexTranscript(filePath) ? (await parseCodexFile(filePath)).conversation : readConversation(filePath);
-}
-
-/** POSIX shell single-quoting. */
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 function workspaceFolders(): string[] {
@@ -345,7 +340,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // The file name is what `claude --resume` and the annotations are keyed by.
       const codex = isCodexTranscript(filePath);
       const sessionId = codex ? codexSessionId(filePath) : path.basename(filePath, '.jsonl');
-      if (!SESSION_ID_RE.test(sessionId)) {
+      if (!isSafeSessionId(sessionId)) {
         void vscode.window.showWarningMessage(`AgentWatch: unexpected session id "${sessionId}", not resuming.`);
         return;
       }
@@ -513,13 +508,14 @@ export function activate(context: vscode.ExtensionContext): void {
         const cmd = (config().get<string>('claudeCommand') || 'claude').trim();
         const terminal = vscode.window.createTerminal({ name: 'Claude · prompt', cwd });
         terminal.show();
-        if (process.platform === 'win32') {
+        // Quoting is only safe in POSIX shells; elsewhere (Windows, fish, ...) the prompt goes through the clipboard.
+        if (process.platform === 'win32' || !isPosixShell(vscode.env.shell)) {
           await vscode.env.clipboard.writeText(full);
           terminal.sendText(cmd);
           void vscode.window.showInformationMessage('AgentWatch: prompt copied; paste it into Claude.');
         } else {
           // `--` ends option parsing, so a prompt that looks like a flag stays a prompt.
-          terminal.sendText(`${cmd} -- ${shellQuote(full)}`);
+          terminal.sendText(`${cmd} -- ${shellQuote(stripControlChars(full))}`);
         }
       }
     }),

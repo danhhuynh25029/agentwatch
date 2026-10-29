@@ -6,12 +6,14 @@ import * as path from 'path';
 import {
   cleanPromptText,
   DEFAULT_LIMITS,
+  isGitCommitCommand,
   parseSession,
   parseTranscriptFile,
   parseTranscriptText,
   stripNoiseTags,
 } from '../parser/parser';
 import { resolveTranscriptUnderRoot } from '../parser/store';
+import { isPosixShell, isSafeSessionId, shellQuote, stripControlChars } from '../shell';
 import { SubagentNode } from '../parser/types';
 import { flattenAgents } from '../webview/render';
 
@@ -284,4 +286,22 @@ test('spawn-only subagent nodes are capped per session', async () => {
     assert.equal(all.agentCount, 30);
     assert.equal(all.spawnNodesSkipped, undefined);
   });
+});
+
+test('git commit detection stays linear on crafted commands', () => {
+  const start = Date.now();
+  assert.equal(isGitCommitCommand(';git -C '.repeat(25_000)), false);
+  assert.equal(isGitCommitCommand('|git -c x=y '.repeat(25_000)), false);
+  assert.ok(Date.now() - start < 500, `took ${Date.now() - start} ms`);
+});
+
+test('terminal helpers reject option-like ids and control characters', () => {
+  assert.ok(isSafeSessionId('2f9c1e6a-1b2c-4d5e-8f90-123456789abc'));
+  assert.ok(!isSafeSessionId('--dangerously-skip-permissions'));
+  assert.ok(!isSafeSessionId('.hidden'));
+  assert.ok(!isSafeSessionId('a b'));
+  assert.equal(stripControlChars('fix\u001b[2J it\r\nnow\t!'), 'fix[2J it\nnow\t!');
+  assert.equal(shellQuote("it's"), `'it'\\''s'`);
+  assert.ok(isPosixShell('/bin/zsh') && isPosixShell('/usr/bin/bash'));
+  assert.ok(!isPosixShell('/opt/homebrew/bin/fish') && !isPosixShell(undefined));
 });

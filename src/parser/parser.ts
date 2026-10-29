@@ -40,12 +40,15 @@ const MAX_LARGE_RESULTS = 20;
 const MAX_FILE_READS = 2000;
 const MAX_COMMITS = 200;
 /** `git commit` as a command (start of the line or after a shell operator), not inside other text. */
-const GIT_COMMIT_RE = /(?:^|&&|\|\||[;\n(|])\s*git\s+(?:-[Cc]\s+\S+\s+)*commit\b/;
+// Option values exclude shell operators so a match cannot span separators (avoids quadratic backtracking).
+const GIT_COMMIT_RE = /(?:^|&&|\|\||[;\n(|])\s*git\s+(?:-[Cc]\s+[^\s;&|()]+\s+)*commit\b/;
+const MAX_COMMIT_COMMAND_CHARS = 8192;
 
 /** True if a Bash command runs `git commit` (heredoc bodies are ignored). */
 export function isGitCommitCommand(command: string): boolean {
   const heredoc = command.indexOf('<<');
-  return GIT_COMMIT_RE.test(heredoc >= 0 ? command.slice(0, heredoc) : command);
+  const head = heredoc >= 0 ? command.slice(0, heredoc) : command;
+  return GIT_COMMIT_RE.test(head.slice(0, MAX_COMMIT_COMMAND_CHARS));
 }
 const COMMIT_OUTPUT_RE = /^\[([^\]\s]+)(?: \(root-commit\))? ([0-9a-f]{7,40})\] (.*)$/m;
 /** Tools that modify files; the path is in input.file_path (or notebook_path). */
