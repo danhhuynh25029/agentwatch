@@ -23,7 +23,9 @@ export interface DashboardData {
   cost: number;
   cacheHit?: number;
   days: DayRow[];
-  projects: Array<{ project: string; sessions: number; usage: TokenUsage; cost: number }>;
+  projects: Array<{ project: string; sessions: number; usage: TokenUsage; cost: number; baseline?: number }>;
+  /** Usage per project and git branch (the branch a session ended on). */
+  branches: Array<{ project: string; branch: string; sessions: number; usage: TokenUsage; cost: number; lastActivity?: string }>;
   models: Array<{ model: string; usage: TokenUsage; cost: number }>;
   mcpTools: Array<{ server: string; tool: string; calls: number; errors: number }>;
   tools: Array<{ name: string; calls: number; errors: number }>;
@@ -54,7 +56,8 @@ export function buildDashboard(
   const usage = emptyUsage();
   let cost = 0;
   const days = new Map<string, DayRow>();
-  const projects = new Map<string, { project: string; sessions: number; usage: TokenUsage; cost: number }>();
+  const projects = new Map<string, { project: string; sessions: number; usage: TokenUsage; cost: number; baselineSum: number; baselineN: number }>();
+  const branches = new Map<string, DashboardData['branches'][number]>();
   const models = new Map<string, { model: string; usage: TokenUsage; cost: number }>();
   const mcp = new Map<string, { server: string; tool: string; calls: number; errors: number }>();
   const tools = new Map<string, { name: string; calls: number; errors: number }>();
@@ -87,11 +90,23 @@ export function buildDashboard(
     for (const m of pricing.unpriced(s.totalByModel)) unpriced.add(m);
     addUsage(usage, sUsage);
     cost += sCost;
-    const p = projects.get(project) ?? { project, sessions: 0, usage: emptyUsage(), cost: 0 };
+    const p = projects.get(project) ?? { project, sessions: 0, usage: emptyUsage(), cost: 0, baselineSum: 0, baselineN: 0 };
     projects.set(project, p);
     p.sessions++;
     addUsage(p.usage, sUsage);
     p.cost += sCost;
+    if (s.main.baselineTokens !== undefined) {
+      p.baselineSum += s.main.baselineTokens;
+      p.baselineN++;
+    }
+    const branch = s.main.gitBranch || '(no branch)';
+    const bKey = project + '\u0000' + branch;
+    const b = branches.get(bKey) ?? { project, branch, sessions: 0, usage: emptyUsage(), cost: 0 };
+    branches.set(bKey, b);
+    b.sessions++;
+    addUsage(b.usage, sUsage);
+    b.cost += sCost;
+    if (s.main.endTime && (!b.lastActivity || s.main.endTime > b.lastActivity)) b.lastActivity = s.main.endTime;
     // Call counts are not split by day; they count whole sessions that had usage in range.
     for (const srv of Object.values(s.totalMcp)) {
       for (const t of Object.values(srv.tools)) {
@@ -125,7 +140,10 @@ export function buildDashboard(
     cost,
     cacheHit: cacheHitRate(usage),
     days: fillDays([...days.values()], sinceDay),
-    projects: [...projects.values()].sort((a, b) => b.cost - a.cost || byTokens(a, b)),
+    projects: [...projects.values()]
+      .sort((a, b) => b.cost - a.cost || byTokens(a, b))
+      .map(({ baselineSum, baselineN, ...p }) => ({ ...p, baseline: baselineN ? Math.round(baselineSum / baselineN) : undefined })),
+    branches: [...branches.values()].sort((a, b) => b.cost - a.cost || byTokens(a, b)).slice(0, topN * 2),
     models: [...models.values()].filter((m) => totalTokens(m.usage) > 0).sort((a, b) => b.cost - a.cost || byTokens(a, b)),
     mcpTools: [...mcp.values()].sort((a, b) => b.calls - a.calls).slice(0, topN),
     tools: [...tools.values()].sort((a, b) => b.calls - a.calls).slice(0, topN),

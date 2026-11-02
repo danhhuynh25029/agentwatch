@@ -184,7 +184,7 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
   );
   const links: Array<[string, string]> = [['summary', 'Summary']];
   if (extras.blocks) links.push(['blocks', '5h blocks']);
-  links.push(['trend', 'Trend'], ['breakdown', 'Breakdown'], ['top', 'Top sessions'], ['usage', 'Tools']);
+  links.push(['trend', 'Trend'], ['breakdown', 'Breakdown'], ['branches', 'Branches'], ['top', 'Top sessions'], ['usage', 'Tools']);
   if (extras.mcpChecked) links.push(['mcp-unused', 'Unused MCP']);
   out.push(nav(links));
 
@@ -228,12 +228,12 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
       'breakdown',
       'Breakdown',
       `<div class="grid-2"><div><h3>Projects</h3>${table(
-        ['Project', 'Sessions', 'Tokens', 'Cost', ''],
+        ['Project', 'Sessions', 'Start ctx', 'Tokens', 'Cost', ''],
         d.projects.map(
           (p) =>
-            `<tr><td class="cell-strong">${esc(p.project)}</td><td class="num">${n(p.sessions)}</td><td class="num" title="cache hit ${esc(formatPercent(cacheHitRate(p.usage)))}">${tok(
-              totalTokens(p.usage),
-            )}</td><td class="num">${weighted(esc(formatUsd(p.cost)), d.cost ? p.cost / d.cost : 0)}</td><td>${shareBar(p.cost / maxProject, 'green')}</td></tr>`,
+            `<tr><td class="cell-strong">${esc(p.project)}</td><td class="num">${n(p.sessions)}</td><td class="num" title="Average context at the first API message">${
+              p.baseline !== undefined ? tok(p.baseline) : '-'
+            }</td><td class="num" title="cache hit ${esc(formatPercent(cacheHitRate(p.usage)))}">${tok(totalTokens(p.usage))}</td><td class="num">${weighted(esc(formatUsd(p.cost)), d.cost ? p.cost / d.cost : 0)}</td><td>${shareBar(p.cost / maxProject, 'green')}</td></tr>`,
         ),
       )}</div><div><h3>Models</h3>${table(
         ['Model', 'Output', 'Cache read', 'Cost', ''],
@@ -243,6 +243,24 @@ export function renderDashboard(d: DashboardData, scopeLabel: string, nonce: str
         ),
       )}</div></div>`,
       {},
+    ),
+  );
+
+  out.push(
+    section(
+      'branches',
+      'Branches',
+      `${table(
+        ['Branch', 'Project', 'Sessions', 'Last activity', 'Tokens', 'Cost'],
+        d.branches.map(
+          (b) =>
+            `<tr><td><span class="mono">${esc(b.branch)}</span></td><td>${chip(b.project, {})}</td><td class="num">${n(b.sessions)}</td><td class="ts">${time(b.lastActivity)}</td><td class="num">${tok(
+              totalTokens(b.usage),
+            )}</td><td class="num">${weighted(esc(formatUsd(b.cost)), d.cost ? b.cost / d.cost : 0)}</td></tr>`,
+        ),
+        2,
+      )}<p class="explain">What each branch cost: sessions are grouped by the git branch they ended on.</p>`,
+      { count: d.branches.length, collapsible: true },
     ),
   );
 

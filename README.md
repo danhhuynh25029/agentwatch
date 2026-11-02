@@ -1,6 +1,6 @@
 # Agent Session Watch
 
-A VS Code extension for looking back at your Claude Code sessions. It reads the transcripts Claude Code already stores in `~/.claude/projects` and shows, for every session, what it cost, what filled its context, which subagents and MCP tools ran, which files it changed and which commits it made.
+A VS Code extension that shows what your Claude Code sessions cost and what drove that cost. It reads the transcripts Claude Code already stores in `~/.claude/projects` and shows, for every session, the estimated cost, which prompts and subagents spent it, what filled the context, which MCP tools ran, which files it changed and which commits it made. While a session runs, it counts down the prompt cache and warns when the agent is stuck in a loop.
 
 Everything is read from local files. The extension makes no network requests and sends nothing anywhere.
 
@@ -8,11 +8,11 @@ Everything is read from local files. The extension makes no network requests and
 
 ## Screenshots
 
-**Session panel**: cost, tokens, cache hit rate and context size of one session.
+**Session panel**: the estimated cost first, then what drove it: each thread and each prompt ranked by cost, the context over time with a scrubber, subagents, commits with their cost, files changed and errors.
 
 ![Session panel](media/screenshots/session.png)
 
-**Usage dashboard**: cost per day, project and model, 5-hour usage blocks, most expensive sessions, and MCP servers you configured but never used.
+**Usage dashboard**: cost per day, project, model and git branch, 5-hour usage blocks, the most expensive sessions, and MCP servers you configured but never used.
 
 ![Usage dashboard](media/screenshots/dashboard.png)
 
@@ -20,7 +20,7 @@ Everything is read from local files. The extension makes no network requests and
 
 ![Conversation viewer](media/screenshots/conversation.png)
 
-**Compare sessions**: two sessions side by side, with the difference for each metric.
+**Compare sessions**: two sessions side by side, with the difference for each metric (green when B is better).
 
 ![Compare two sessions](media/screenshots/compare.png)
 
@@ -48,8 +48,8 @@ code --install-extension agentwatch-*.vsix
 
 1. Click the **AgentWatch** icon in the activity bar. Sessions are grouped by project, newest first.
 2. Click a session to open its panel. Expand it in the tree to see subagents, MCP calls, tools, files changed and errors.
-3. Use the view's toolbar to search sessions, filter them, or open the **usage dashboard**. The `…` menu has prompt search, commit lookup, session comparison and report export.
-4. The status bar shows the tokens and estimated cost of the latest session in your workspace, and the current 5-hour usage block.
+3. Use the view's toolbar to search sessions, filter them, or open the **usage dashboard**. The `…` menu has prompt search, full-text conversation search, commit lookup, session comparison and report export.
+4. The status bar shows the tokens and estimated cost of the latest session in your workspace, a countdown until its prompt cache expires, and the current 5-hour usage block.
 5. Open a file that Claude changed: a CodeLens at the top says "Edited in N Claude sessions". Click it to see the changes in a diff editor.
 
 All commands are also in the command palette under **AgentWatch**.
@@ -59,7 +59,8 @@ All commands are also in the command palette under **AgentWatch**.
 ### Understand a session
 
 - **Cost and tokens**: estimated cost, input/output/cache tokens and cache hit rate, for the whole session and for the main thread, per model. The cost Claude Code recorded itself is shown next to the estimate.
-- **Context**: a chart of the context size per API message with compactions marked, and a breakdown of what fills it: tool results by size, the largest results, and files read more than once.
+- **Cost drivers**: the main thread and each subagent ranked by cost, and the cost of each prompt you typed.
+- **Context**: drag through a chart of the context size per API message (compactions marked), see how big the context was before any work (system prompt, tools, MCP definitions, CLAUDE.md), and what fills it: tool results by size, the largest results, and files read more than once.
 - **Insights**: hints such as a low cache hit rate, repeated reads, huge tool results, the same error repeated, failing MCP servers, subagents running on a top-tier model, or repeated compactions.
 - **Subagents**: nested subagents with their own tokens, cost, duration and status, plus a timeline of when each ran.
 - **Files changed**: every file touched by `Edit` / `MultiEdit` / `Write` / `NotebookEdit`. Open the file, or see each change the session made to it in VS Code's diff editor.
@@ -73,6 +74,8 @@ All commands are also in the command palette under **AgentWatch**.
 - **Compare** two sessions metric by metric.
 - **Search** sessions by title, first prompt, project, branch, tag or note, and **filter** the tree by time range, text or pinned only.
 - **Prompt library**: search every prompt you typed, then copy it, open its session, or run it in a new Claude session.
+- **Search conversations**: full-text search across prompts, replies, tool inputs and tool results of recent sessions.
+- **Branches** on the dashboard: what each git branch cost across its sessions, and the average starting context per project.
 - **Find session for commit**: paste a commit hash to find the session that made it.
 - **Usage report**: export Markdown, CSV (one row per session) or JSON.
 - **Pins, tags and notes** per session.
@@ -81,8 +84,10 @@ All commands are also in the command palette under **AgentWatch**.
 
 - **Live mode**: the status bar shows the running tool, and open panels of a running session update as the transcript grows. Running sessions are parsed incrementally, so updates stay fast on large transcripts.
 - **Notifications** when a session finishes its turn, or has been waiting on a tool call (a permission prompt or a long command) for a while. By default they only appear when VS Code is in the background.
+- **Prompt cache timer**: a status bar countdown until the prompt cache of the latest workspace session expires (5 minutes, or 1 hour with 1-hour cache writes), with the extra cost of letting it expire. A notification warns a minute before.
+- **Loop alerts**: a notification when a running session fails the same tool call with the same error 3 times in a row.
 - **5-hour blocks**: tokens used in the current 5-hour window across all projects, and the time until it resets.
-- **Budgets**: optional warnings when a session or the day's total reaches a USD amount.
+- **Budgets**: optional warnings when a session, the current project's day, or the day's total reaches a USD amount.
 
 ### Also
 
@@ -105,13 +110,17 @@ These are estimates. They do not reflect subscription plans (Pro/Max), Bedrock o
 | `agentwatch.statusBar.enabled` | `true` | Show the session status bar item |
 | `agentwatch.statusBar.showCost` | `true` | Show the estimated cost in the status bar |
 | `agentwatch.statusBar.showBlock` | `true` | Show the current 5-hour block in the status bar |
+| `agentwatch.statusBar.showCacheTimer` | `true` | Show the prompt cache countdown in the status bar |
 | `agentwatch.blocks.tokenLimit` | `0` | Token budget per 5-hour block (0 = show raw tokens) |
 | `agentwatch.live.enabled` | `true` | Live indicator and panel updates for running sessions |
 | `agentwatch.notify.onFinish` / `onWaiting` | `true` | Notifications for running sessions |
 | `agentwatch.notify.waitingSeconds` | `30` | Wait before the "waiting on a tool" notification |
 | `agentwatch.notify.onlyWhenUnfocused` | `true` | Only notify when VS Code is in the background |
+| `agentwatch.notify.onLoop` | `true` | Notify when a running session repeats the same failing tool call |
+| `agentwatch.notify.cacheExpiry` / `cacheExpirySeconds` | `true` / `60` | Warn before the prompt cache expires |
 | `agentwatch.budget.sessionUsd` | `0` | Warn when the latest workspace session reaches this cost (0 = off) |
 | `agentwatch.budget.dailyUsd` | `0` | Warn when today's total cost reaches this amount (0 = off) |
+| `agentwatch.budget.projectDailyUsd` | `0` | Warn when today's cost of the current workspace's project reaches this amount (0 = off) |
 | `agentwatch.dashboard.days` | `30` | Default dashboard range in days (0 = all time) |
 | `agentwatch.codeLens.enabled` | `true` | "Edited in N Claude sessions" CodeLens |
 | `agentwatch.prompts.sessionLimit` | `300` | Sessions scanned by prompt search and commit lookup |
@@ -154,4 +163,9 @@ node out/scripts/scan.js -n 10 path/to/session.jsonl
 
 Press **F5** in VS Code ("Run Extension") to start an Extension Development Host. The default build task runs `npm run watch`.
 
-The screenshots in `media/screenshots/` and the tour in `media/demo.gif` were rendered from fictional demo transcripts, not real sessions.
+The screenshots in `media/screenshots/` and the tour in `media/demo.gif` are rendered from fictional demo transcripts, not real sessions. To regenerate them after a UI change (needs Google Chrome and Python 3 with Pillow):
+
+```sh
+npm run compile
+sh tools/demo/build.sh   # writes media/screenshots/*.png and media/demo.gif
+```

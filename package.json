@@ -2,7 +2,7 @@
   "name": "agentwatch",
   "displayName": "Agent Session Watch",
   "description": "Browse past Claude Code sessions: cost, tokens, subagents, MCP tool calls, edited files and conversations.",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "publisher": "HunhNgcCngDanh",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -177,6 +177,12 @@
         "icon": "$(diff)"
       },
       {
+        "command": "agentwatch.searchConversations",
+        "title": "Search Conversations…",
+        "category": "AgentWatch",
+        "icon": "$(search-fuzzy)"
+      },
+      {
         "command": "agentwatch.searchPrompts",
         "title": "Search Prompts…",
         "category": "AgentWatch",
@@ -242,6 +248,11 @@
           "command": "agentwatch.searchPrompts",
           "when": "view == agentwatch.sessions",
           "group": "2_tools@2"
+        },
+        {
+          "command": "agentwatch.searchConversations",
+          "when": "view == agentwatch.sessions",
+          "group": "2_tools@3"
         },
         {
           "command": "agentwatch.findCommit",
@@ -440,6 +451,12 @@
           "minimum": 0,
           "description": "Warn once per day when today's estimated cost across all sessions reaches this amount in USD. 0 disables."
         },
+        "agentwatch.budget.projectDailyUsd": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Warn once per day when today's estimated cost of the current workspace's project reaches this amount in USD. 0 disables."
+        },
         "agentwatch.dashboard.days": {
           "type": "number",
           "default": 30,
@@ -483,6 +500,27 @@
           "type": "boolean",
           "default": true,
           "description": "Only notify while the VS Code window is not focused."
+        },
+        "agentwatch.notify.onLoop": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify when a running session fails the same tool call with the same error 3 times in a row (it may be stuck). Shown even while VS Code is focused."
+        },
+        "agentwatch.notify.cacheExpiry": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify shortly before the prompt cache of the latest workspace session expires (respects notify.onlyWhenUnfocused)."
+        },
+        "agentwatch.notify.cacheExpirySeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "description": "How long before the prompt cache expires to warn, in seconds."
+        },
+        "agentwatch.statusBar.showCacheTimer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a countdown until the prompt cache of the latest workspace session expires (5 minutes, or 1 hour with 1-hour cache writes)."
         },
         "agentwatch.statusBar.showBlock": {
           "type": "boolean",
@@ -536,7 +574,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
-    "test": "node --test out/test/parser.test.js out/test/render.test.js out/test/security.test.js out/test/features.test.js out/test/more.test.js out/test/fixes.test.js",
+    "test": "node --test out/test/parser.test.js out/test/render.test.js out/test/security.test.js out/test/features.test.js out/test/more.test.js out/test/fixes.test.js out/test/insights2.test.js",
     "scan": "node out/scripts/scan.js"
   },
   "devDependencies": {

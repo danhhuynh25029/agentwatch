@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { detectLoop, toolLabel } from './parser/insights';
 import { SessionStore } from './parser/store';
 
 const TICK_MS = 5000;
@@ -12,6 +13,8 @@ interface Watched {
   lastChange: number;
   notifiedTurn?: string;
   notifiedWaiting?: string;
+  /** Key of the error loop already reported (tool + error + first timestamp of the run). */
+  notifiedLoop?: string;
 }
 
 /**
@@ -41,6 +44,7 @@ export class SessionNotifier implements vscode.Disposable {
       onWaiting: c.get<boolean>('onWaiting', true),
       waitingMs: Math.max(5, c.get<number>('waitingSeconds', 30)) * 1000,
       onlyWhenUnfocused: c.get<boolean>('onlyWhenUnfocused', true),
+      onLoop: c.get<boolean>('onLoop', true),
     };
   }
 
@@ -56,7 +60,9 @@ export class SessionNotifier implements vscode.Disposable {
           this.watched.delete(filePath);
           continue;
         }
-        if (idle < FINISH_IDLE_MS || (!cfg.onFinish && !cfg.onWaiting)) continue;
+        if (!cfg.onFinish && !cfg.onWaiting && !cfg.onLoop) continue;
+        // Loops are checked while the session is busy; finish/waiting only once it is quiet.
+        if (idle < FINISH_IDLE_MS && !cfg.onLoop) continue;
         let summary;
         try {
           summary = await this.store.getSummaryByPath(filePath);
@@ -65,6 +71,17 @@ export class SessionNotifier implements vscode.Disposable {
         }
         const m = summary.main;
         const quiet = cfg.onlyWhenUnfocused && vscode.window.state.focused;
+        const loop = cfg.onLoop ? detectLoop(summary.totalToolErrors) : undefined;
+        if (loop) {
+          const errs = summary.totalToolErrors;
+          const key = `${loop.tool}|${loop.error}|${errs[errs.length - loop.count]?.timestamp ?? ''}`;
+          if (key !== w.notifiedLoop) {
+            w.notifiedLoop = key;
+            // A loop is worth interrupting for even when VS Code is focused.
+            void this.show(`🔁 ${summary.title}: ${toolLabel(loop.tool)} failed ${loop.count}× in a row with the same error. The session may be stuck. ${loop.error.slice(0, 120)}`, filePath);
+          }
+        }
+        if (idle < FINISH_IDLE_MS) continue;
         if (m.pendingTools.length === 0 && m.turnEndedAt && m.turnEndedAt !== w.notifiedTurn) {
           const first = w.notifiedTurn === undefined && Date.parse(m.turnEndedAt) < w.lastChange - 60_000;
           w.notifiedTurn = m.turnEndedAt;

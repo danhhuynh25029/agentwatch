@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { sessionCostOnDay } from './parser/aggregate';
 import { mapPool, localDay } from './parser/parser';
@@ -16,6 +17,8 @@ const DAILY_CHECK_INTERVAL_MS = 60_000;
 export class BudgetMonitor {
   private lastDailyCheck = 0;
   private dailyRunning = false;
+  private lastProjectCheck = 0;
+  private projectRunning = false;
 
   constructor(
     private readonly state: vscode.Memento,
@@ -25,10 +28,10 @@ export class BudgetMonitor {
     private readonly getPricing: () => Pricing,
   ) {}
 
-  private budgets(): { session: number; daily: number } {
+  private budgets(): { session: number; daily: number; projectDaily: number } {
     const cfg = vscode.workspace.getConfiguration('agentwatch');
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
-    return { session: num(cfg.get('budget.sessionUsd')), daily: num(cfg.get('budget.dailyUsd')) };
+    return { session: num(cfg.get('budget.sessionUsd')), daily: num(cfg.get('budget.dailyUsd')), projectDaily: num(cfg.get('budget.projectDailyUsd')) };
   }
 
   /** Records `key` as notified; returns false if it already was. */
@@ -42,7 +45,7 @@ export class BudgetMonitor {
 
   /** Check the session just shown in the status bar, and (rate-limited) today's total. */
   check(info: SessionFileInfo, summary: SessionSummary): void {
-    const { session, daily } = this.budgets();
+    const { session, daily, projectDaily } = this.budgets();
     if (session) {
       const cost = this.getPricing().costByModel(summary.totalByModel);
       if (cost >= session) {
@@ -62,6 +65,39 @@ export class BudgetMonitor {
       this.dailyRunning = true;
       void this.checkDaily(daily).finally(() => (this.dailyRunning = false));
     }
+    if (projectDaily && Date.now() - this.lastProjectCheck >= DAILY_CHECK_INTERVAL_MS && !this.projectRunning) {
+      this.lastProjectCheck = Date.now();
+      this.projectRunning = true;
+      void this.checkProject(info, summary, projectDaily).finally(() => (this.projectRunning = false));
+    }
+  }
+
+  /** Today's cost of the sessions stored in the same project folder as `info`. */
+  async projectTodayCost(info: SessionFileInfo): Promise<number> {
+    const dir = path.dirname(info.filePath);
+    const today = localDay(Date.now());
+    const start = sinceMs(0);
+    const sessions = (await this.allSessions()).filter((s) => s.mtimeMs >= start && path.dirname(s.filePath) === dir);
+    const costs = await mapPool(sessions, 4, async (s) => {
+      try {
+        return sessionCostOnDay(await this.store.getSummary(s), today, this.getPricing());
+      } catch {
+        return 0;
+      }
+    });
+    return costs.reduce((a, b) => a + b, 0);
+  }
+
+  private async checkProject(info: SessionFileInfo, summary: SessionSummary, budget: number): Promise<void> {
+    const cost = await this.projectTodayCost(info);
+    if (cost < budget) return;
+    const project = summary.main.cwd ? path.basename(summary.main.cwd) : path.basename(path.dirname(info.filePath));
+    if (!(await this.markOnce(`project:${path.dirname(info.filePath)}:${localDay(Date.now())}:${budget}`))) return;
+    const pick = await vscode.window.showWarningMessage(
+      `AgentWatch: today's usage in ${project} is ≈${formatUsd(cost)} (project budget ${formatUsd(budget)}).`,
+      'Open Dashboard',
+    );
+    if (pick) await vscode.commands.executeCommand('agentwatch.openDashboard');
   }
 
   /** Sum of today's cost across all sessions modified today (every project, not only the workspace). */

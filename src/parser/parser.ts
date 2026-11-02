@@ -200,7 +200,12 @@ interface PendingUsage {
   usage: TokenUsage;
   /** Epoch ms of the first line carrying this message (or the latest timestamp seen before it). */
   t?: number;
+  /** Index in stats.prompts of the prompt this message answers (-1: before any prompt). */
+  p: number;
 }
+
+export const CACHE_TTL_5M_MS = 5 * 60 * 1000;
+export const CACHE_TTL_1H_MS = 60 * 60 * 1000;
 
 /** UTC hour of an epoch-ms time as YYYY-MM-DDTHH. */
 export function utcHour(t: number): string {
@@ -428,6 +433,7 @@ export class TranscriptAccumulator {
       // usage, but the first time (Map keeps the first insertion position).
       this.usageById.set(key, {
         t: this.usageById.get(key)?.t ?? this.lastMs,
+        p: this.usageById.get(key)?.p ?? this.stats.prompts.length - 1,
         model,
         usage: {
           input: num(u.input_tokens),
@@ -687,12 +693,26 @@ export class TranscriptAccumulator {
     s.usageByHour = dict();
     s.apiMessages = 0;
     const context: ContextPoint[] = [];
+    for (const p of s.prompts) {
+      p.usage = dict();
+      p.messages = 0;
+    }
+    let cacheTouched: number | undefined;
+    let cache1h = false;
+    s.baselineTokens = undefined;
     // Messages seen before any timestamp are attributed to the transcript's first timestamp.
     const fallbackMs = Number.isFinite(this.startMs) ? this.startMs : undefined;
-    for (const { model, usage, t: seenAt } of this.usageById.values()) {
+    for (const { model, usage, t: seenAt, p } of this.usageById.values()) {
       const t = seenAt ?? fallbackMs;
       addUsage(s.usage, usage);
       const key = model ?? '(unknown)';
+      const prompt = p >= 0 ? s.prompts[Math.min(p, s.prompts.length - 1)] : undefined;
+      if (prompt && key !== '<synthetic>') {
+        addUsage((prompt.usage![key] ??= emptyUsage()), usage);
+        prompt.messages!++;
+      }
+      if (usage.cacheRead + usage.cacheWrite > 0 && t !== undefined) cacheTouched = t;
+      if (usage.cacheWrite1h) cache1h = true;
       const m = (s.usageByModel[key] ??= { ...emptyUsage(), messages: 0 });
       addUsage(m, usage);
       m.messages++;
@@ -707,6 +727,7 @@ export class TranscriptAccumulator {
         dm.messages++;
       }
       if (key !== '<synthetic>') {
+        s.baselineTokens ??= usage.input + usage.cacheWrite + usage.cacheRead;
         context.push({
           i: s.apiMessages,
           timestamp: t !== undefined ? new Date(t).toISOString() : undefined,
@@ -716,6 +737,8 @@ export class TranscriptAccumulator {
       s.apiMessages++;
     }
     s.context = downsample(context, MAX_CONTEXT_POINTS);
+    s.cacheTouchedAt = cacheTouched !== undefined ? new Date(cacheTouched).toISOString() : undefined;
+    s.cacheTtlMs = cacheTouched !== undefined ? (cache1h ? CACHE_TTL_1H_MS : CACHE_TTL_5M_MS) : undefined;
     s.compactions = [...this.compactionIdx];
     s.pendingTools = [...this.openTools.values()].slice(-MAX_PENDING_TOOLS);
     s.models = sortedModels(s.usageByModel);

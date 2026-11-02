@@ -5,7 +5,7 @@ import * as pathLib from 'path';
 import { cacheHitRate, formatPercent, formatUsd, Pricing } from '../parser/pricing';
 import { SessionSummary, SubagentNode, TokenUsage, ToolStat } from '../parser/types';
 import { SessionAnnotation } from '../annotations';
-import { approxTokens, sessionInsights, toolLabel } from '../parser/insights';
+import { approxTokens, promptCosts, sessionInsights, toolLabel } from '../parser/insights';
 import { action, chip, esc, figures, ganttChart, GanttRow, hero, kpis, MAX_INDENT, n, nav, page, pill, scrubChart, section, shareBar, statusPill, table, time, tok, weighted } from './html';
 
 export { esc, renderMessage } from './html';
@@ -149,6 +149,31 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     drivers.length > DRIVER_ROWS ? `<p class="explain">${n(drivers.length - DRIVER_ROWS)} more in <a class="btn-link" href="#agents">Subagents</a>.</p>` : ''
   }`;
 
+  // Cost by prompt: each API message of the main thread belongs to the prompt it answers.
+  const costs = promptCosts(s, pricing);
+  const PROMPT_ROWS = 5;
+  const rankedPrompts = costs
+    .map((cost, i) => ({ cost, i }))
+    .filter((p) => p.cost > 0)
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, PROMPT_ROWS);
+  const byPrompt = rankedPrompts.length
+    ? `<h3>By prompt</h3>${table(
+        ['#', 'Prompt', 'API msgs', 'Cost', 'Share'],
+        rankedPrompts.map(({ cost, i }) => {
+          const p = m.prompts[i];
+          const text = p.text.length > 140 ? p.text.slice(0, 139) + '…' : p.text;
+          return `<tr><td class="muted">${n(i + 1)}</td><td><div class="pt">${esc(text)}</div><div class="ts">${time(p.timestamp)}</div></td><td class="num">${n(p.messages ?? 0)}</td><td class="num">${weighted(
+            esc(formatUsd(cost)),
+            mainCost ? cost / mainCost : 0,
+          )}</td><td>${shareBar(mainCost ? cost / mainCost : 0)}</td></tr>`;
+        }),
+        2,
+      )}<p class="explain">Main thread only: subagent cost is listed above. ${
+        m.prompts.length > PROMPT_ROWS ? `All ${n(m.prompts.length)} prompts are in <a class="btn-link" href="#prompts">Prompts</a>.` : ''
+      }</p>`
+    : '';
+
   const tokensBody = `${usageCards('Session incl. subagents', s.totalUsage, totalCost)}
     ${usageCards('Main thread only', m.usage, pricing.costByModel(m.usageByModel))}
     <p class="explain">Estimated from public API list prices; cache writes are priced by their 5-minute or 1-hour TTL.${
@@ -170,7 +195,12 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
       formatTokens,
       peakIndex,
     )}
-    <div class="axis-note"><span>${time(m.startTime)}</span><span>${m.compactions.length ? `${n(m.compactions.length)} compaction(s), dashed` : 'drag to scrub'}</span><span>${time(m.endTime)}</span></div>`;
+    <div class="axis-note"><span>${time(m.startTime)}</span><span>${m.compactions.length ? `${n(m.compactions.length)} compaction(s), dashed` : 'drag to scrub'}</span><span>${time(m.endTime)}</span></div>
+    ${
+      m.baselineTokens !== undefined
+        ? `<div class="figs-sm"><span><b>${tok(m.baselineTokens)}</b> at the first API message (system prompt, tools, MCP definitions, CLAUDE.md, first prompt)</span><span><b>${tok(peak)}</b> peak</span></div>`
+        : ''
+    }`;
 
   const insightItems = sessionInsights(s, pricing);
   const insights = insightItems.length
@@ -337,14 +367,15 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
   const skills = skillRows.length ? `<h3>Skills</h3>${table(['Skill', 'Calls'], skillRows)}` : '';
 
   const promptItems = m.prompts.map(
-    (p) => `<li><span class="ts">${time(p.timestamp)}</span><div class="pt">${esc(p.text)}</div></li>`,
+    (p, i) =>
+      `<li><span class="ts">${time(p.timestamp)}${costs[i] ? `<br>${weighted(esc(formatUsd(costs[i])), mainCost ? costs[i] / mainCost : 0)} · ${n(p.messages ?? 0)} msgs` : ''}</span><div class="pt">${esc(p.text)}</div></li>`,
   );
   const prompts = section('prompts', 'User prompts', promptItems.length ? `<ol class="timeline">${promptItems.join('')}</ol>` : '<div class="empty">None</div>', {
     count: m.prompts.length,
     collapsible: true,
   });
   const toolsSection = section('tools', 'Tools', `<div class="grid-2">${tools}${mcp}</div>${skills}`, { count: s.totalToolCalls, collapsible: true });
-  const overview = section('overview', 'Cost drivers', `${driversTable}${insights}`, {});
+  const overview = section('overview', 'Cost drivers', `${driversTable}${byPrompt}${insights}`, {});
   const navLinks: Array<[string, string]> = [['overview', 'Cost drivers'], ['context', 'Context'], ['tokens', 'Tokens']];
   if (agents) navLinks.push(['agents', 'Subagents']);
   if (commits) navLinks.push(['commits', 'Commits']);

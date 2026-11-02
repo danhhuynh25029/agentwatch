@@ -30,6 +30,10 @@ export interface McpServerStat {
 export interface PromptEntry {
   timestamp?: string;
   text: string;
+  /** Usage of the API messages answering this prompt (until the next prompt), per model. Main thread only. */
+  usage?: Record<string, TokenUsage>;
+  /** Number of API messages answering this prompt. */
+  messages?: number;
 }
 
 /** Result of an Agent/Task tool call as recorded on the matching user line. */
@@ -175,6 +179,12 @@ export interface TranscriptStats {
   turnEndedAt?: string;
   /** Cost Claude Code itself recorded (last cost-state line), in USD. */
   reportedCostUsd?: number;
+  /** Time of the last API message that read or wrote the prompt cache (each hit refreshes its TTL). */
+  cacheTouchedAt?: string;
+  /** Prompt cache TTL in ms: 1 hour once a 1-hour cache write was seen, otherwise 5 minutes. */
+  cacheTtlMs?: number;
+  /** Context size of the first API message: system prompt, tool and MCP definitions, CLAUDE.md and the first prompt. */
+  baselineTokens?: number;
   lines: number;
   badLines: number;
   /** Set when the file was not parsed (e.g. over the size limit); human-readable reason. */

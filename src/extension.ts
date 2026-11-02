@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { AnnotationStore, parseTags } from './annotations';
 import { BlockTracker } from './blockTracker';
 import { BudgetMonitor } from './budget';
+import { CacheTimer } from './cacheTimer';
 import { FileHistoryCodeLens, FileHistoryIndex, FileHistoryProvider } from './fileHistory';
 import { SessionNotifier } from './notifier';
 import { codexSessionId, collectCodexFileEdits, isCodexTranscript, listCodexSessions, parseCodexFile } from './parser/codex';
@@ -18,6 +19,7 @@ import { sessionToMarkdown } from './parser/export';
 import { formatRelativeTime, formatTokens, totalTokens } from './parser/format';
 import { mapPool } from './parser/parser';
 import { Pricing } from './parser/pricing';
+import { searchConversation } from './parser/search';
 import { expandHome, matchesWorkspace, ProjectInfo, resolveTranscriptUnderRoot, SessionFileInfo, SessionStore } from './parser/store';
 import { SessionSummary, ToolErrorEntry } from './parser/types';
 import { CLAUDE_EXTENSION_ID, CLAUDE_OPEN_SESSION_COMMAND, claudeOpenSessionUri, resumeTarget } from './resume';
@@ -136,7 +138,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const comparisons = new KeyedPanels('agentwatch.compare');
   const getProjects = () => tree.getProjects();
   const budget = new BudgetMonitor(context.globalState, store, () => allSessions(tree), getPricing);
-  const statusBar = new TokenStatusBar(store, getProjects, matchesCurrentWorkspace, getPricing, isLive, (info, s) => budget.check(info, s));
+  const cacheTimer = new CacheTimer(getPricing);
+  const statusBar = new TokenStatusBar(store, getProjects, matchesCurrentWorkspace, getPricing, isLive, (info, s) => {
+    budget.check(info, s);
+    cacheTimer.update(info, s);
+  });
   const notifier = new SessionNotifier(store);
   const blocks = new BlockTracker(store, () => allSessions(tree), getPricing);
   const fileIndex = new FileHistoryIndex(store, getProjects, getPricing);
@@ -145,7 +151,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const codeLens = new FileHistoryCodeLens(fileIndex);
   const diffDocs = new DiffDocuments();
   context.subscriptions.push(
-    tree, view, panels, conversations, dashboards, comparisons, statusBar, notifier, blocks, fileIndex, fileHistory, fileHistoryView, codeLens,
+    tree, view, panels, conversations, dashboards, comparisons, statusBar, cacheTimer, notifier, blocks, fileIndex, fileHistory, fileHistoryView, codeLens,
     vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLens),
     vscode.workspace.registerTextDocumentContentProvider(DiffDocuments.scheme, diffDocs),
   );
@@ -471,6 +477,47 @@ export function activate(context: vscode.ExtensionContext): void {
         { location: vscode.ProgressLocation.Notification, title: 'AgentWatch: building dashboard…' },
         () => dashboards.show('dashboard', render),
       );
+    }),
+
+    vscode.commands.registerCommand('agentwatch.searchConversations', async () => {
+      const query = (await vscode.window.showInputBox({ prompt: 'Search text in conversations (prompts, replies, tool inputs and results)', placeHolder: 'e.g. ECONNREFUSED or invoice.ts' }))?.trim();
+      if (!query) return;
+      const limit = Math.max(10, config().get<number>('prompts.sessionLimit', 300));
+      const MAX_HITS = 500;
+      const items = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `AgentWatch: searching for "${query}"…`, cancellable: true },
+        async (progress, token) => {
+          const sessions = (await allSessions(tree)).slice(0, limit);
+          let done = 0;
+          let total = 0;
+          const found = await mapPool(sessions, 4, async (info) => {
+            if (token.isCancellationRequested || total >= MAX_HITS) return [];
+            try {
+              const hits = searchConversation(await readConversationAny(info.filePath), query, 20);
+              total += hits.length;
+              const title = (await store.peek(info)).title;
+              return hits.map((h) => ({
+                label: h.snippet,
+                description: `${h.where} · ${title}`,
+                detail: h.timestamp ? new Date(h.timestamp).toLocaleString() : formatRelativeTime(info.mtimeMs),
+                filePath: info.filePath,
+                time: h.timestamp ?? '',
+              }));
+            } catch {
+              return [];
+            } finally {
+              progress.report({ message: `${++done}/${sessions.length} sessions`, increment: 100 / Math.max(sessions.length, 1) });
+            }
+          });
+          return found.flat().sort((a, b) => b.time.localeCompare(a.time)).slice(0, MAX_HITS);
+        },
+      );
+      if (!items.length) {
+        void vscode.window.showInformationMessage(`AgentWatch: "${query}" was not found in the ${limit} most recent sessions.`);
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(items, { placeHolder: `${items.length} match(es) for "${query}"`, matchOnDescription: true, matchOnDetail: true });
+      if (picked) await vscode.commands.executeCommand('agentwatch.viewConversation', picked.filePath);
     }),
 
     vscode.commands.registerCommand('agentwatch.searchPrompts', async () => {

@@ -1,7 +1,7 @@
 // Heuristic optimisation hints for a session. No vscode dependency.
 import { splitMcpName } from './parser';
 import { cacheHitRate, formatPercent, formatUsd, Pricing } from './pricing';
-import { SessionSummary, SubagentNode } from './types';
+import { SessionSummary, SubagentNode, ToolErrorEntry } from './types';
 import { formatTokens } from './format';
 
 export interface Insight {
@@ -22,6 +22,46 @@ const LARGE_RESULT_TOKENS = 20_000;
 const REPEATED_ERROR = 3;
 const EXPENSIVE_SUBAGENT_USD = 0.5;
 const MANY_COMPACTIONS = 2;
+const LARGE_BASELINE_TOKENS = 30_000;
+const DOMINANT_PROMPT_SHARE = 0.5;
+/** Consecutive identical tool errors that count as a loop while a session runs. */
+export const LOOP_REPEATS = 3;
+const LOOP_WINDOW_MS = 10 * 60 * 1000;
+
+export interface LoopSignal {
+  tool: string;
+  error: string;
+  count: number;
+  /** Timestamp of the latest error in the run. */
+  last?: string;
+}
+
+function errorKey(e: ToolErrorEntry): string {
+  return `${e.tool}\u0000${e.error.replace(/\s+/g, ' ').trim().slice(0, 80)}`;
+}
+
+/**
+ * The run of identical tool errors at the end of `errors` (same tool, same error text), when it is
+ * at least LOOP_REPEATS long and happened within a few minutes: the agent keeps retrying something
+ * that keeps failing.
+ */
+export function detectLoop(errors: ToolErrorEntry[]): LoopSignal | undefined {
+  if (errors.length < LOOP_REPEATS) return undefined;
+  const last = errors[errors.length - 1];
+  const key = errorKey(last);
+  let count = 0;
+  for (let i = errors.length - 1; i >= 0 && errorKey(errors[i]) === key; i--) count++;
+  if (count < LOOP_REPEATS) return undefined;
+  const first = errors[errors.length - count];
+  const span = Date.parse(last.timestamp ?? '') - Date.parse(first.timestamp ?? '');
+  if (Number.isFinite(span) && span > LOOP_WINDOW_MS) return undefined;
+  return { tool: last.tool, error: last.error.replace(/\s+/g, ' ').trim().slice(0, 160), count, last: last.timestamp };
+}
+
+/** Main-thread cost of each prompt, in prompt order. */
+export function promptCosts(s: SessionSummary, pricing: Pricing): number[] {
+  return s.main.prompts.map((p) => (p.usage ? pricing.costByModel(p.usage) : 0));
+}
 
 function walk(list: SubagentNode[], fn: (a: SubagentNode) => void): void {
   const stack = [...list];
@@ -112,6 +152,30 @@ export function sessionInsights(s: SessionSummary, pricing: Pricing): Insight[] 
       title: `Context was compacted ${s.main.compactions.length} times`,
       detail: 'Long sessions lose detail at each compaction. Splitting work into separate sessions or delegating to subagents keeps the main context smaller.',
     });
+  }
+
+  const baseline = s.main.baselineTokens;
+  if (baseline !== undefined && baseline >= LARGE_BASELINE_TOKENS) {
+    out.push({
+      severity: 'info',
+      title: `Starts with ${formatTokens(baseline)} tokens of context`,
+      detail:
+        'That much was in the context before any work: the system prompt, tool and MCP server definitions, CLAUDE.md files and the first prompt. It is re-sent with every API message. Removing unused MCP servers and trimming CLAUDE.md lowers it.',
+    });
+  }
+
+  const costs = promptCosts(s, pricing);
+  const mainCost = costs.reduce((a, b) => a + b, 0);
+  if (costs.length >= 3 && mainCost > 0) {
+    const top = costs.reduce((best, c, i) => (c > costs[best] ? i : best), 0);
+    const share = costs[top] / mainCost;
+    if (share >= DOMINANT_PROMPT_SHARE) {
+      out.push({
+        severity: 'info',
+        title: `One prompt drove ${formatPercent(share)} of the main thread's cost`,
+        detail: `Prompt ${top + 1} (${formatUsd(costs[top])}): "${s.main.prompts[top].text.slice(0, 120)}". See "By prompt" under Cost drivers.`,
+      });
+    }
   }
 
   const unpriced = pricing.unpriced(s.totalByModel);

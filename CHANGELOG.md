@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+- Redesigned panels: cost is set at display size, figures rank by size and weight instead of boxes, table costs are weighted by their share, and one accent marks the context scrubber, the current section and focus.
+- Cost drivers: the main thread and each subagent ranked by cost, and the cost of each prompt (main thread).
+- Context: drag a scrubber through the session to read the context size at any message; the starting context (system prompt, tools, MCP definitions, CLAUDE.md) is shown, with a hint when it is large.
+- Prompt cache timer in the status bar, with a notification before the cache expires.
+- Loop alerts when a running session repeats the same failing tool call.
+- Dashboard: cost per git branch, and average starting context per project.
+- Search conversations: full-text search over prompts, replies and tool inputs/results.
+- Per-project daily budget (`agentwatch.budget.projectDailyUsd`).
+
 ## 0.3.2
 
 - "Resume Session" opens the session in the Claude Code extension when it is installed and the session belongs to the open workspace; otherwise it uses a terminal as before. New setting `agentwatch.resumeIn` (`auto`, `extension`, `terminal`).
