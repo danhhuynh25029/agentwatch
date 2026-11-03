@@ -252,7 +252,7 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
       depth: a.depth,
       title: `${a.agentType} · ${a.description}\n${formatDuration(Date.parse(a.stats.endTime!) - Date.parse(a.stats.startTime!))} · ${formatTokens(totalTokens(a.totalUsage))} tokens`,
     }));
-    gantt = `<h3>Timeline</h3>${ganttChart(rows, t0, t1)}<div class="axis-note"><span>${time(new Date(t0).toISOString())}</span><span>${time(new Date(t1).toISOString())}</span></div>`;
+    gantt = `<h3>Timeline</h3>${ganttChart(rows, t0, t1)}<div class="axis-note gantt-axis"><span>${time(new Date(t0).toISOString())}</span><span>${time(new Date(t1).toISOString())}</span></div>`;
   }
 
   let prevCost = 0;
@@ -287,10 +287,11 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
   )}`;
 
   const agentRows = flattenAgents(s.subagents).map((a) => {
-    let open = '';
+    // The agent's name opens its transcript (when there is one), like file names open files.
+    let name = `<span class="cell-strong">${esc(a.agentType)}</span>`;
     if (a.transcriptPath) {
       transcripts.push(a.transcriptPath);
-      open = action('openTranscript', 'open', { index: transcripts.length - 1, link: true, title: 'Open transcript' });
+      name = action('openTranscript', a.agentType, { index: transcripts.length - 1, link: true, title: `Open the ${a.agentType} transcript` });
     }
     const own = a.transcriptPath ? tok(totalTokens(a.stats.usage)) : a.reportedTokens !== undefined ? `~${tok(a.reportedTokens)}` : '-';
     const nested = a.children.length ? tok(totalTokens(a.totalUsage)) : '';
@@ -300,7 +301,7 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     // Inline style attributes are blocked by the CSP, so indentation uses classes.
     const depthClass = 'd' + Math.min(a.depth, MAX_INDENT);
     return `<tr>
-      <td><span class="${depthClass} cell-strong">${a.depth > 1 ? '&#8627; ' : ''}${esc(a.agentType)}</span></td>
+      <td><span class="${depthClass} agent-name">${a.depth > 1 ? '&#8627; ' : ''}${name}</span></td>
       <td>${esc(a.description)}</td>
       <td>${a.model ? chip(a.model, { tone: 'purple' }) : '-'}</td>
       <td class="num">${own}</td>
@@ -309,7 +310,6 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
       <td class="num">${calls}</td>
       <td class="num">${esc(formatDuration(a.durationMs))}</td>
       <td>${statusPill(a.status)}</td>
-      <td>${open}</td>
     </tr>`;
   });
   const agentsSkipped =
@@ -323,7 +323,7 @@ export function renderSession(s: SessionSummary, nonce: string, cspSource: strin
     ? section(
         'agents',
         'Subagents',
-        `${agentsSkipped}${table(['Type', 'Description', 'Model', 'Tokens', 'Incl. nested', 'Cost', 'Tool calls', 'Duration', 'Status', ''], agentRows, 3)}${gantt}`,
+        `${agentsSkipped}${table(['Type', 'Description', 'Model', 'Tokens', 'Incl. nested', 'Cost', 'Tool calls', 'Duration', 'Status'], agentRows, 3)}${gantt}`,
         { count: s.agentCount },
       )
     : '';

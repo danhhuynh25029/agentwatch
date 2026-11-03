@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { sessionCostOnDay } from './parser/aggregate';
 import { mapPool, localDay } from './parser/parser';
+import { noLinks } from './parser/format';
 import { formatUsd, Pricing } from './parser/pricing';
 import { SessionFileInfo, SessionStore } from './parser/store';
 import { SessionSummary } from './parser/types';
@@ -53,7 +54,7 @@ export class BudgetMonitor {
           if (!first) return;
           void vscode.window
             .showWarningMessage(
-              `AgentWatch: session "${summary.title}" has reached ≈${formatUsd(cost)} (budget ${formatUsd(session)}).`,
+              noLinks(`AgentWatch: session "${summary.title}" has reached ≈${formatUsd(cost)} (budget ${formatUsd(session)}).`),
               'Open Session',
             )
             .then((pick) => pick && vscode.commands.executeCommand('agentwatch.openSession', info.filePath));
@@ -94,7 +95,7 @@ export class BudgetMonitor {
     const project = summary.main.cwd ? path.basename(summary.main.cwd) : path.basename(path.dirname(info.filePath));
     if (!(await this.markOnce(`project:${path.dirname(info.filePath)}:${localDay(Date.now())}:${budget}`))) return;
     const pick = await vscode.window.showWarningMessage(
-      `AgentWatch: today's usage in ${project} is ≈${formatUsd(cost)} (project budget ${formatUsd(budget)}).`,
+      noLinks(`AgentWatch: today's usage in ${project} is ≈${formatUsd(cost)} (project budget ${formatUsd(budget)}).`),
       'Open Dashboard',
     );
     if (pick) await vscode.commands.executeCommand('agentwatch.openDashboard');

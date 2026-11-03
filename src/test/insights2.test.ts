@@ -125,3 +125,10 @@ test('session panel shows cost by prompt and the starting context', async () => 
   assert.match(html, /big refactor/);
   assert.match(html, /at the first API message/);
 });
+
+test('secondary table columns are marked for hiding in narrow panels, never the first', async () => {
+  const { table } = await import('../webview/html');
+  const html = table(['Model', 'API msgs', 'Total', 'Duration', 'Cost'], ['<tr><td>a</td><td>1</td><td>2</td><td>3</td><td>4</td></tr>']);
+  assert.match(html, /<table class="hm-2 hn-4">/);
+  assert.doesNotMatch(table(['Tokens', 'Cost'], ['<tr><td>1</td><td>2</td></tr>']), /hn-/);
+});

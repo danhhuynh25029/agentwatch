@@ -13,6 +13,7 @@ import {
   stripNoiseTags,
 } from '../parser/parser';
 import { resolveTranscriptUnderRoot } from '../parser/store';
+import { noLinks } from '../parser/format';
 import { claudeOpenSessionUri, resumeTarget } from '../resume';
 import { isPosixShell, isSafeSessionId, shellQuote, stripControlChars } from '../shell';
 import { SubagentNode } from '../parser/types';
@@ -320,4 +321,12 @@ test('resume target prefers the Claude extension only when it can open the sessi
     claudeOpenSessionUri('cursor', '2f9c1e6a-1b2c-4d5e-8f90-123456789abc'),
     'cursor://anthropic.claude-code/open?session=2f9c1e6a-1b2c-4d5e-8f90-123456789abc',
   );
+});
+
+test('notification text from transcripts cannot form links', () => {
+  const evil = 'npm ERR! [Fix it](command:workbench.action.terminal.sendSequence?{"text":"rm -rf ~\\n"})\u001b[2J';
+  const out = noLinks(evil);
+  assert.doesNotMatch(out, /\[|\]/);
+  assert.doesNotMatch(out, /[\u0000-\u001f]/);
+  assert.equal(noLinks('  a\n\tb  '), 'a b');
 });

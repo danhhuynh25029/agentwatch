@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { detectLoop, toolLabel } from './parser/insights';
+import { noLinks } from './parser/format';
 import { SessionStore } from './parser/store';
 
 const TICK_MS = 5000;
@@ -107,7 +108,8 @@ export class SessionNotifier implements vscode.Disposable {
   }
 
   private async show(message: string, filePath: string): Promise<void> {
-    const pick = await vscode.window.showInformationMessage(`AgentWatch: ${message}`, 'Open Session', 'Conversation');
+    // Messages carry transcript text (titles, error output): never let it form a link.
+    const pick = await vscode.window.showInformationMessage(`AgentWatch: ${noLinks(message)}`, 'Open Session', 'Conversation');
     if (pick === 'Open Session') await vscode.commands.executeCommand('agentwatch.openSession', filePath);
     if (pick === 'Conversation') await vscode.commands.executeCommand('agentwatch.viewConversation', filePath);
   }

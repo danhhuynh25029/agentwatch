@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { noLinks } from './parser/format';
 import { CACHE_TTL_1H_MS } from './parser/parser';
 import { formatUsd, Pricing } from './parser/pricing';
 import { SessionFileInfo } from './parser/store';
@@ -95,7 +96,7 @@ export class CacheTimer implements vscode.Disposable {
         this.notifiedFor = t.touchedAt;
         if (!(cfg.onlyWhenUnfocused && vscode.window.state.focused)) {
           void vscode.window
-            .showInformationMessage(`AgentWatch: the prompt cache of "${t.title}" expires in ${clock(left)}${cost}.`, 'Open Session')
+            .showInformationMessage(noLinks(`AgentWatch: the prompt cache of "${t.title}" expires in ${clock(left)}${cost}.`), 'Open Session')
             .then((pick) => pick && vscode.commands.executeCommand('agentwatch.openSession', t.info.filePath));
         }
       }

@@ -26,10 +26,27 @@ export function time(iso: string | undefined): string {
   return Number.isNaN(d.getTime()) ? esc(iso) : esc(d.toLocaleString());
 }
 
+/**
+ * Secondary columns, by header label, hidden when the panel is narrow (NARROW_PX). The first
+ * column of a table is never hidden, so "Model" stays in a per-model table.
+ */
+/** Columns that already go at medium widths (MEDIUM_PX), in wide tables. */
+const MEDIUM_OPTIONAL = new Set(['Description', 'Incl. nested', 'Tool calls', 'API msgs', 'Cache write', 'Hash', 'Last activity']);
+export const MEDIUM_PX = 760;
+const NARROW_OPTIONAL = new Set([
+  'Model', 'Description', 'API msgs', 'Input', 'Output', 'Cache write', 'Cache read', 'Results', 'Average', 'Time', 'Hash', 'Branch',
+  'Incl. nested', 'Tool calls', 'Duration', 'Writes', 'Main only', 'Sessions', 'Start ctx', 'Project', 'Last activity',
+]);
+export const NARROW_PX = 560;
+const MAX_TABLE_COLS = 12;
+
 export function table(headers: string[], rows: string[], numericFrom = 1): string {
   if (rows.length === 0) return '<div class="empty">Nothing here</div>';
   const th = headers.map((h, i) => `<th class="${i >= numericFrom ? 'num' : ''}">${esc(h)}</th>`).join('');
-  return `<div class="tbl"><table><thead><tr>${th}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+  const hide = headers
+    .map((h, i) => (i === 0 || i >= MAX_TABLE_COLS ? '' : MEDIUM_OPTIONAL.has(h) ? `hm-${i + 1}` : NARROW_OPTIONAL.has(h) ? `hn-${i + 1}` : ''))
+    .filter(Boolean);
+  return `<div class="tbl"><table${hide.length ? ` class="${hide.join(' ')}"` : ''}><thead><tr>${th}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
 }
 
 export type Tone = 'blue' | 'green' | 'purple' | 'orange' | 'red' | 'teal';
@@ -261,26 +278,25 @@ export interface GanttRow {
   depth?: number;
 }
 
-/** Horizontal timeline (one bar per row) as inline SVG. Times are epoch ms. */
+/**
+ * Timeline, one row per item: the label is HTML text (so it never scales with the chart) and the
+ * bar is a small SVG stretched across the remaining width. Times are epoch ms.
+ */
 export function ganttChart(rows: GanttRow[], t0: number, t1: number): string {
   if (rows.length === 0 || !(t1 > t0)) return '<div class="empty">No timing data</div>';
-  const rowH = 24;
-  const labelW = 240;
-  const w = CHART_W;
-  const h = rows.length * rowH + 6;
-  const sx = (t: number) => labelW + ((t - t0) / (t1 - t0)) * (w - labelW - PAD);
-  const bars = rows
-    .map((r, i) => {
+  const w = 1000;
+  const sx = (t: number) => ((t - t0) / (t1 - t0)) * w;
+  const items = rows
+    .map((r) => {
       const x = sx(Math.max(r.start, t0));
-      const bw = Math.max(sx(Math.min(r.end, t1)) - x, 3);
-      const y = i * rowH + 4;
-      const label = (r.depth && r.depth > 1 ? '  '.repeat(r.depth - 1) + '↳ ' : '') + r.label;
-      return `<rect class="gantt-track" x="${labelW}" y="${y}" width="${w - labelW - PAD}" height="${rowH - 8}" rx="4"/><text class="gantt-label" x="4" y="${y + 12}">${esc(
-        label.length > 36 ? label.slice(0, 35) + '…' : label,
-      )}</text><rect class="gantt-bar${r.error ? ' error' : ''}" rx="4" x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${rowH - 8}"><title>${esc(r.title)}</title></rect>`;
+      const bw = Math.max(sx(Math.min(r.end, t1)) - x, 4);
+      const depth = Math.min(Math.max(r.depth ?? 1, 1), MAX_INDENT);
+      return `<div class="gantt-row"><div class="gantt-label d${depth}" title="${esc(r.label)}">${depth > 1 ? '&#8627; ' : ''}${esc(r.label)}</div><svg class="gantt-svg" viewBox="0 0 ${w} 10" preserveAspectRatio="none" role="img"><rect class="gantt-track" x="0" y="0" width="${w}" height="10"/><rect class="gantt-bar${
+        r.error ? ' error' : ''
+      }" x="${x.toFixed(1)}" y="0" width="${bw.toFixed(1)}" height="10"><title>${esc(r.title)}</title></rect></svg></div>`;
     })
     .join('');
-  return `<div class="gantt"><svg viewBox="0 0 ${w} ${h}" width="100%" role="img">${bars}</svg></div>`;
+  return `<div class="gantt">${items}</div>`;
 }
 
 /** Full HTML document with a nonce-based CSP (no inline style attributes allowed). */
@@ -324,8 +340,13 @@ const TONES: Record<Tone, string> = {
 const TONE_CSS = Object.entries(TONES)
   .map(([t, c]) => `.tone-${t} { --tone: ${c}; }`)
   .join('\n');
+const hideCols = (cls: string, px: number) =>
+  `@media (max-width: ${px}px) {\n${Array.from({ length: MAX_TABLE_COLS - 1 }, (_, i) => i + 2)
+    .map((c) => `  table.${cls}-${c} > * > tr > :nth-child(${c}) { display: none; }`)
+    .join('\n')}\n}`;
+const NARROW_CSS = hideCols('hm', MEDIUM_PX) + '\n' + hideCols('hn', NARROW_PX);
 
-export const STYLE = INDENT_CSS + '\n' + TONE_CSS + `
+export const STYLE = INDENT_CSS + '\n' + TONE_CSS + '\n' + NARROW_CSS + `
 :root {
   --fg: var(--vscode-foreground);
   --muted: var(--vscode-descriptionForeground);
@@ -377,7 +398,7 @@ td .chip, .vs .chip { color: var(--muted); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 24px; }
 
 /* Specimen figures: hierarchy by size and weight only, no boxes. */
-.figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 22px 28px; margin-top: 30px; }
+.figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 22px 24px; margin-top: 30px; }
 .fig { min-width: 0; }
 .fig-value { font-size: 28px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.1; margin-top: 4px; white-space: nowrap; }
 .fig-sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
@@ -385,8 +406,7 @@ td .chip, .vs .chip { color: var(--muted); }
 .fig-lead .fig-label { flex-basis: 100%; }
 .fig-lead .fig-value { font-size: 64px; font-weight: 600; letter-spacing: -0.045em; line-height: 1; margin-top: 6px; }
 .fig-lead .fig-sub { font-size: 13px; margin: 0; }
-.figs-sm { display: flex; flex-wrap: wrap; gap: 4px 0; margin-top: 18px; color: var(--muted); font-size: 12.5px; }
-.figs-sm span + span::before { content: '·'; padding: 0 9px; color: var(--line-strong); }
+.figs-sm { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 18px; color: var(--muted); font-size: 12.5px; }
 .figs-sm b { color: var(--fg); font-weight: 600; }
 
 /* Weight encodes share: w1 = smallest share, w5 = largest. */
@@ -406,8 +426,9 @@ td .chip, .vs .chip { color: var(--muted); }
 .btn-icon { opacity: 0.8; }
 
 /* Navigation */
-.nav { position: sticky; top: 0; z-index: 5; display: flex; gap: 2px 18px; flex-wrap: wrap; margin: 20px 0 0; padding-top: 2px; border-bottom: 1px solid var(--line); background: var(--bg); }
-.nav a { padding: 10px 0 9px; color: var(--muted); font-size: 12.5px; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.12s ease-out, border-color 0.12s ease-out; }
+.nav { position: sticky; top: 0; z-index: 5; display: flex; gap: 18px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 20px 0 0; padding-top: 2px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.nav::-webkit-scrollbar { display: none; }
+.nav a { flex: none; white-space: nowrap; padding: 10px 0 9px; color: var(--muted); font-size: 12.5px; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.12s ease-out, border-color 0.12s ease-out; }
 .nav a:hover { color: var(--fg); }
 .nav a[aria-current="true"] { color: var(--fg); border-bottom-color: var(--accent); }
 
@@ -435,7 +456,7 @@ details.card[open] .chev { transform: rotate(90deg); }
 .count { font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
 .sec-body { padding: 10px 0 8px; }
 .sec-body > :is(.caption, h3):first-child, .sec-body > .grid-2:first-child > div > :is(.caption, h3):first-child { margin-top: 6px; }
-.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 0 40px; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 28px 40px; }
 .empty { color: var(--muted); padding: 14px 0; }
 .explain { color: var(--muted); font-size: 12px; margin-top: 10px; max-width: 80ch; }
 
@@ -452,14 +473,16 @@ tbody tr:hover td { background: var(--hover); }
 .num { text-align: right; white-space: nowrap; }
 .ts { white-space: nowrap; color: var(--muted); font-size: 12px; }
 table.kv { width: auto; }
+.agent-name { font-weight: 600; white-space: nowrap; }
+.agent-name .btn-link { font-weight: 600; white-space: nowrap; word-break: normal; }
 table.kv th { color: var(--muted); font-weight: 400; padding-right: 32px; font-family: inherit; text-transform: none; letter-spacing: 0; font-size: 13px; border: none; }
 table.kv td { border: none; }
 table.kv tr:hover td { background: none; }
 .cell-strong { font-weight: 600; }
 
 /* Pills: status words, not badges. */
-.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-.pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.pill { display: inline-flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 18px; color: var(--muted); white-space: nowrap; }
+.pill::before { content: ''; width: 6px; height: 6px; margin-top: 6px; border-radius: 50%; background: currentColor; flex: none; }
 .pill-err { color: var(--red); }
 .pill-ok { color: var(--green); }
 .pill-warn { color: var(--warn); }
@@ -501,7 +524,7 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--surface);
 .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .legend b { color: var(--fg); font-weight: 500; }
 .legend .swatch-marker { color: var(--muted); }
-.axis-note { display: flex; justify-content: space-between; color: var(--muted); font-family: var(--mono); font-size: 10.5px; padding-left: 52px; margin-top: 4px; }
+.axis-note { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; color: var(--muted); font-family: var(--mono); font-size: 10.5px; padding-left: 52px; margin-top: 4px; }
 
 /* Context scrubber: one range input re-sets the readout above the chart. */
 .scrub-read { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin: 4px 0 8px; }
@@ -513,8 +536,11 @@ input.scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; heigh
 input.scrub:focus-visible { outline-offset: 4px; }
 
 /* Gantt */
-.gantt svg { display: block; }
-.gantt-label { fill: var(--fg); font-size: 11.5px; font-family: var(--vscode-font-family); white-space: pre; }
+.gantt { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.gantt-row { display: grid; grid-template-columns: minmax(0, 240px) 1fr; gap: 4px 16px; align-items: center; }
+.gantt-label { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gantt-svg { display: block; width: 100%; height: 10px; }
+.gantt-axis { padding-left: 256px; }
 .gantt-track { fill: var(--faint); }
 .gantt-bar { fill: var(--ink); }
 .gantt-bar.error { fill: var(--red); }
@@ -533,15 +559,24 @@ input.scrub:focus-visible { outline-offset: 4px; }
 .spinner { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--line-strong); border-top-color: var(--fg); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .pill-live::before, .spinner { animation: none; } * { transition: none !important; } }
-@media (max-width: 640px) {
+@media (max-width: 560px) {
   .wrap { padding: 22px 16px 64px; }
   .hero h1 { font-size: 22px; }
   .fig-lead .fig-value { font-size: 48px; }
-  .fig-value { font-size: 24px; }
+  .fig-value, .kpi-value { font-size: 22px; }
   .sec-title { font-size: 19px; }
   .sec-head { padding-top: 36px; }
-  .grid-2 { grid-template-columns: 1fr; }
+  th, td { padding-left: 8px; padding-right: 8px; }
+  .pill { white-space: normal; text-align: left; }
+  /* The nav scrolls sideways: fade its end so hidden links read as more to scroll to. */
+  .nav { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+  .scrub-read .fig-value { font-size: 36px; }
+}
+@media (max-width: 480px) {
+  .gantt-row { grid-template-columns: 1fr; }
+  .gantt-axis { padding-left: 0; }
   .chart { padding-left: 0; } .y-axis { display: none; } .axis-note { padding-left: 0; } input.scrub { width: 100%; margin-left: 0; }
+  .axis-note span:nth-child(2):not(:last-child) { display: none; }
 }
 `;
 

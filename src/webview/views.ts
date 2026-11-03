@@ -40,6 +40,7 @@ body.replaying .replay { display: flex; }
 .convbar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 0; margin-bottom: 18px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .convbar label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; cursor: pointer; margin-right: 6px; }
 .convbar .spacer { flex: 1; }
+@media (max-width: 480px) { .msg { max-width: 100%; } details.tool { margin-left: 0; max-width: 100%; } .msg .avatar { display: none; } }
 `;
 
 const SUMMARY_KEYS = ['file_path', 'notebook_path', 'pattern', 'path', 'command', 'description', 'url', 'query', 'skill', 'prompt'];
@@ -346,7 +347,7 @@ const COMPARE_STYLE = `
 .vs .mid { display: none; }
 .vs .t { font-weight: 600; font-size: 16px; letter-spacing: -0.01em; display: flex; align-items: center; }
 .vs .chips { margin-top: 10px; }
-@media (max-width: 640px) { .vs { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .vs { grid-template-columns: 1fr; } }
 `;
 
 export function renderCompare(a: SessionSummary, b: SessionSummary, metrics: CompareMetric[], nonce: string, cspSource: string): string {

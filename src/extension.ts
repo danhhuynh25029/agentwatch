@@ -16,7 +16,7 @@ import { describeFilter, isFilterEmpty, SessionFilter, sinceMs } from './filter'
 import { buildDashboard, compareSessions, dayNDaysAgo, DashboardSession } from './parser/aggregate';
 import { collectFileEdits, Conversation, readConversation } from './parser/conversation';
 import { sessionToMarkdown } from './parser/export';
-import { formatRelativeTime, formatTokens, totalTokens } from './parser/format';
+import { formatRelativeTime, formatTokens, noLinks, totalTokens } from './parser/format';
 import { mapPool } from './parser/parser';
 import { Pricing } from './parser/pricing';
 import { searchConversation } from './parser/search';
@@ -234,7 +234,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const transcriptsOf = (s: SessionSummary) => [s.filePath, ...flattenAgents(s.subagents).map((a) => a.transcriptPath).filter(Boolean)];
 
-  const reportError = (what: string, err: unknown) => void vscode.window.showErrorMessage(`AgentWatch: ${what}: ${String(err)}`);
+  const reportError = (what: string, err: unknown) => void vscode.window.showErrorMessage(noLinks(`AgentWatch: ${what}: ${String(err)}`));
 
   context.subscriptions.push(
     vscode.commands.registerCommand('agentwatch.refresh', () => {
@@ -348,7 +348,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const codex = isCodexTranscript(filePath);
       const sessionId = codex ? codexSessionId(filePath) : path.basename(filePath, '.jsonl');
       if (!isSafeSessionId(sessionId)) {
-        void vscode.window.showWarningMessage(`AgentWatch: unexpected session id "${sessionId}", not resuming.`);
+        void vscode.window.showWarningMessage(noLinks(`AgentWatch: unexpected session id "${sessionId}", not resuming.`));
         return;
       }
       const target = resumeTarget({
@@ -360,7 +360,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (target === 'extension' && (await openInClaudeExtension(sessionId))) return;
       let cwd = summary?.main.cwd;
       if (cwd && !(await isDirectory(cwd))) {
-        void vscode.window.showWarningMessage(`AgentWatch: ${cwd} no longer exists; the terminal opens in your home folder.`);
+        void vscode.window.showWarningMessage(noLinks(`AgentWatch: ${cwd} no longer exists; the terminal opens in your home folder.`));
         cwd = undefined;
       }
       const cmd = codex ? (config().get<string>('codexCommand') || 'codex').trim() : (config().get<string>('claudeCommand') || 'claude').trim();
@@ -675,7 +675,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const resolved = await fileArg(arg);
       if (!resolved) return;
       if (!path.isAbsolute(resolved.file) || !(await isFile(resolved.file))) {
-        const pick = await vscode.window.showWarningMessage(`AgentWatch: ${resolved.file} does not exist anymore.`, 'Show Changes');
+        const pick = await vscode.window.showWarningMessage(noLinks(`AgentWatch: ${resolved.file} does not exist anymore.`), 'Show Changes');
         if (pick) await vscode.commands.executeCommand('agentwatch.showFileEdits', { sessionPath: resolved.sessionPath, file: resolved.file });
         return;
       }
@@ -689,7 +689,7 @@ export function activate(context: vscode.ExtensionContext): void {
         ? await collectCodexFileEdits(resolved.sessionPath, resolved.file)
         : await collectFileEdits(transcriptsOf(resolved.summary), resolved.file);
       if (ops.length === 0) {
-        void vscode.window.showInformationMessage(`AgentWatch: no edit calls found for ${path.basename(resolved.file)}.`);
+        void vscode.window.showInformationMessage(noLinks(`AgentWatch: no edit calls found for ${path.basename(resolved.file)}.`));
         return;
       }
       const { before, after } = buildDiffSides(ops, resolved.summary.filePath);

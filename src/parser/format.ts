@@ -61,6 +61,19 @@ export function formatRelativeTime(time: number, now: number = Date.now()): stri
   return Math.floor(d / 365) + 'y ago';
 }
 
+/**
+ * Text safe to show in a VS Code notification: notifications render `[label](target)` as a link,
+ * including `command:` targets, so transcript text must not be able to form one. Drops square
+ * brackets and control characters and puts everything on one line.
+ */
+export function noLinks(s: string): string {
+  return s
+    .replace(/[\[\]]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function truncate(s: string, max: number): string {
   const one = s.replace(/\s+/g, ' ').trim();
   return one.length > max ? one.slice(0, max - 1) + '…' : one;

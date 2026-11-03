@@ -10,6 +10,9 @@
 - Dashboard: cost per git branch, and average starting context per project.
 - Search conversations: full-text search over prompts, replies and tool inputs/results.
 - Per-project daily budget (`agentwatch.budget.projectDailyUsd`).
+- Panels fit narrow editor columns: below 560px, tables hide secondary columns (model, time, sessions, input/output breakdown…) instead of overflowing, the section nav stays on one line and scrolls sideways, and figures, charts and the compare view adapt. Wide tables also drop their least important columns below 760px.
+- Subagents: the agent's name opens its transcript (the separate "open" column is gone), and the timeline keeps its labels readable at any width.
+- Security: notifications no longer let transcript text (session titles, tool errors, paths) form clickable links, which VS Code would otherwise render, including `command:` links.
 
 ## 0.3.2
 
